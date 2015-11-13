@@ -20,21 +20,28 @@ import java.util.Arrays;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.Seekable;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
 import tachyon.Constants;
 import tachyon.TachyonURI;
-import tachyon.TestUtils;
-import tachyon.client.TachyonFS;
 import tachyon.client.TachyonFSTestUtils;
-import tachyon.client.WriteType;
+import tachyon.client.TachyonStorageType;
+import tachyon.client.UnderStorageType;
+import tachyon.client.file.TachyonFile;
+import tachyon.client.file.TachyonFileSystem;
+import tachyon.exception.ExceptionMessage;
+import tachyon.exception.TachyonException;
 import tachyon.master.LocalTachyonCluster;
-import tachyon.thrift.ClientFileInfo;
+import tachyon.thrift.FileInfo;
+import tachyon.util.io.BufferUtils;
 
 /**
  * Integration tests for HdfsFileInputStream.
@@ -46,27 +53,28 @@ public class HdfsFileInputStreamIntegrationTest {
   private static final int BUFFER_SIZE = 50;
 
   private static LocalTachyonCluster sLocalTachyonCluster = null;
-  private static TachyonFS sTFS = null;
+  private static TachyonFileSystem sTachyonFileSystem = null;
   private HdfsFileInputStream mInMemInputStream;
   private HdfsFileInputStream mUfsInputStream;
+
+  @Rule
+  public final ExpectedException mThrown = ExpectedException.none();
 
   @AfterClass
   public static final void afterClass() throws Exception {
     sLocalTachyonCluster.stop();
-    System.clearProperty("fs.hdfs.impl.disable.cache");
   }
 
   @BeforeClass
-  public static final void beforeClass() throws IOException {
-    // Disable hdfs client caching to avoid file system close() affecting other clients
-    System.setProperty("fs.hdfs.impl.disable.cache", "true");
-
+  public static final void beforeClass() throws Exception {
     sLocalTachyonCluster = new LocalTachyonCluster(WORKER_CAPACITY, USER_QUOTA_UNIT_BYTES,
         Constants.GB);
     sLocalTachyonCluster.start();
-    sTFS = sLocalTachyonCluster.getClient();
-    TachyonFSTestUtils.createByteFile(sTFS, "/testFile1", WriteType.CACHE_THROUGH, FILE_LEN);
-    TachyonFSTestUtils.createByteFile(sTFS, "/testFile2", WriteType.THROUGH, FILE_LEN);
+    sTachyonFileSystem = sLocalTachyonCluster.getClient();
+    TachyonFSTestUtils.createByteFile(sTachyonFileSystem, "/testFile1", TachyonStorageType.STORE,
+        UnderStorageType.SYNC_PERSIST, FILE_LEN);
+    TachyonFSTestUtils.createByteFile(sTachyonFileSystem, "/testFile2", TachyonStorageType.NO_STORE,
+        UnderStorageType.SYNC_PERSIST, FILE_LEN);
   }
 
   @After
@@ -76,16 +84,16 @@ public class HdfsFileInputStreamIntegrationTest {
   }
 
   @Before
-  public final void before() throws IOException {
-    ClientFileInfo fileInfo = sTFS.getFileStatus(-1, new TachyonURI("/testFile1"));
-    mInMemInputStream = new HdfsFileInputStream(sTFS, fileInfo.getId(),
-        new Path(fileInfo.getUfsPath()), new Configuration(), BUFFER_SIZE,
-        sLocalTachyonCluster.getMasterTachyonConf());
+  public final void before() throws IOException, TachyonException {
+    TachyonFile file1 = sTachyonFileSystem.open(new TachyonURI("/testFile1"));
+    FileInfo fileInfo1 = sTachyonFileSystem.getInfo(file1);
+    mInMemInputStream = new HdfsFileInputStream(fileInfo1.getFileId(),
+        new Path(fileInfo1.getUfsPath()), new Configuration(), BUFFER_SIZE, null);
 
-    fileInfo = sTFS.getFileStatus(-1, new TachyonURI("/testFile2"));
-    mUfsInputStream = new HdfsFileInputStream(sTFS, fileInfo.getId(),
-        new Path(fileInfo.getUfsPath()), new Configuration(), BUFFER_SIZE,
-        sLocalTachyonCluster.getMasterTachyonConf());
+    TachyonFile file2 = sTachyonFileSystem.open(new TachyonURI("/testFile2"));
+    FileInfo fileInfo2 = sTachyonFileSystem.getInfo(file2);
+    mUfsInputStream = new HdfsFileInputStream(fileInfo2.getFileId(),
+        new Path(fileInfo2.getUfsPath()), new Configuration(), BUFFER_SIZE, null);
   }
 
   /**
@@ -116,12 +124,12 @@ public class HdfsFileInputStreamIntegrationTest {
     byte[] buf = new byte[FILE_LEN];
     int length = mInMemInputStream.read(buf, 0, FILE_LEN);
     Assert.assertEquals(FILE_LEN, length);
-    Assert.assertTrue(TestUtils.equalIncreasingByteArray(FILE_LEN, buf));
+    Assert.assertTrue(BufferUtils.equalIncreasingByteArray(FILE_LEN, buf));
 
     Arrays.fill(buf, (byte) 0);
     length = mUfsInputStream.read(buf, 0, FILE_LEN);
     Assert.assertEquals(FILE_LEN, length);
-    Assert.assertTrue(TestUtils.equalIncreasingByteArray(FILE_LEN, buf));
+    Assert.assertTrue(BufferUtils.equalIncreasingByteArray(FILE_LEN, buf));
 
     Arrays.fill(buf, (byte) 0);
     length = mInMemInputStream.read(buf, 0, 1);
@@ -138,25 +146,26 @@ public class HdfsFileInputStreamIntegrationTest {
     byte[] buf = new byte[FILE_LEN];
     int length = mInMemInputStream.read(0, buf, 0, FILE_LEN);
     Assert.assertEquals(FILE_LEN, length);
-    Assert.assertTrue(TestUtils.equalIncreasingByteArray(FILE_LEN, buf));
+    Assert.assertTrue(BufferUtils.equalIncreasingByteArray(FILE_LEN, buf));
     Assert.assertEquals(0, mInMemInputStream.getPos());
 
     Arrays.fill(buf, (byte) 0);
     length = mUfsInputStream.read(0, buf, 0, FILE_LEN);
     Assert.assertEquals(FILE_LEN, length);
-    Assert.assertTrue(TestUtils.equalIncreasingByteArray(FILE_LEN, buf));
+    Assert.assertTrue(BufferUtils.equalIncreasingByteArray(FILE_LEN, buf));
     Assert.assertEquals(0, mUfsInputStream.getPos());
 
+    buf = new byte[FILE_LEN - 10];
     Arrays.fill(buf, (byte) 0);
     length = mInMemInputStream.read(10, buf, 0, FILE_LEN - 10);
     Assert.assertEquals(FILE_LEN - 10, length);
-    Assert.assertTrue(TestUtils.equalIncreasingByteArray(10, FILE_LEN - 10, buf));
+    Assert.assertTrue(BufferUtils.equalIncreasingByteArray(10, FILE_LEN - 10, buf));
     Assert.assertEquals(0, mInMemInputStream.getPos());
 
     Arrays.fill(buf, (byte) 0);
     length = mUfsInputStream.read(10, buf, 0, FILE_LEN - 10);
     Assert.assertEquals(FILE_LEN - 10, length);
-    Assert.assertTrue(TestUtils.equalIncreasingByteArray(10, FILE_LEN - 10, buf));
+    Assert.assertTrue(BufferUtils.equalIncreasingByteArray(10, FILE_LEN - 10, buf));
     Assert.assertEquals(0, mUfsInputStream.getPos());
 
     Arrays.fill(buf, (byte) 0);
@@ -172,38 +181,51 @@ public class HdfsFileInputStreamIntegrationTest {
   }
 
   @Test
-  public void seekTest() throws IOException {
-    mInMemInputStream.seek(0);
-    Assert.assertEquals(0, mInMemInputStream.getPos());
-    IOException exception = null;
-    try {
-      mInMemInputStream.seek(-1);
-    } catch (IOException e) {
-      exception = e;
-    }
-    Assert.assertEquals("Seek position is negative: -1", exception.getMessage());
-    try {
-      mInMemInputStream.seek(FILE_LEN + 1);
-    } catch (IOException e) {
-      exception = e;
-    }
-    Assert.assertEquals("Seek position is past EOF: " + (FILE_LEN + 1) + ", fileSize = "
-        + FILE_LEN, exception.getMessage());
+  public void inMemSeekTest() throws IOException {
+    seekTest(mInMemInputStream);
+  }
 
-    mUfsInputStream.seek(0);
-    Assert.assertEquals(0, mUfsInputStream.getPos());
-    try {
-      mUfsInputStream.seek(-1);
-    } catch (IOException e) {
-      exception = e;
-    }
-    Assert.assertEquals("Seek position is negative: -1", exception.getMessage());
-    try {
-      mUfsInputStream.seek(FILE_LEN + 1);
-    } catch (IOException e) {
-      exception = e;
-    }
-    Assert.assertEquals("Seek position is past EOF: " + (FILE_LEN + 1) + ", fileSize = "
-        + FILE_LEN, exception.getMessage());
+  @Test
+  public void ufsSeekTest() throws IOException {
+    seekTest(mUfsInputStream);
+  }
+
+  private void seekTest(Seekable stream) throws IOException {
+    stream.seek(0);
+    Assert.assertEquals(0, stream.getPos());
+
+    stream.seek(FILE_LEN / 2);
+    Assert.assertEquals(FILE_LEN / 2, stream.getPos());
+
+    stream.seek(1);
+    Assert.assertEquals(1, stream.getPos());
+  }
+
+  @Test
+  public void seekNegativeTest() throws IOException {
+    mThrown.expect(IOException.class);
+    mThrown.expectMessage(ExceptionMessage.SEEK_NEGATIVE.getMessage(-1));
+    mInMemInputStream.seek(-1);
+  }
+
+  @Test
+  public void seekPastEofTest() throws IOException {
+    mThrown.expect(IOException.class);
+    mThrown.expectMessage(ExceptionMessage.SEEK_PAST_EOF.getMessage(FILE_LEN + 1, FILE_LEN));
+    mInMemInputStream.seek(FILE_LEN + 1);
+  }
+
+  @Test
+  public void seekNegativeUfsTest() throws IOException {
+    mThrown.expect(IOException.class);
+    mThrown.expectMessage(ExceptionMessage.SEEK_NEGATIVE.getMessage(-1));
+    mUfsInputStream.seek(-1);
+  }
+
+  @Test
+  public void seekPastEofUfsTest() throws IOException {
+    mThrown.expect(IOException.class);
+    mThrown.expectMessage(ExceptionMessage.SEEK_PAST_EOF.getMessage(FILE_LEN + 1, FILE_LEN));
+    mUfsInputStream.seek(FILE_LEN + 1);
   }
 }

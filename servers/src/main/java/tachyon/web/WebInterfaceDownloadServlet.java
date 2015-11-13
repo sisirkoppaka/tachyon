@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -23,35 +23,33 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import com.google.common.base.Preconditions;
 import com.google.common.io.ByteStreams;
 
-import tachyon.Constants;
 import tachyon.TachyonURI;
-import tachyon.client.InStream;
-import tachyon.client.ReadType;
-import tachyon.client.TachyonFile;
-import tachyon.client.TachyonFS;
+import tachyon.client.TachyonStorageType;
+import tachyon.client.file.FileInStream;
+import tachyon.client.file.TachyonFile;
+import tachyon.client.file.TachyonFileSystem;
+import tachyon.client.file.TachyonFileSystem.TachyonFileSystemFactory;
+import tachyon.client.file.options.InStreamOptions;
 import tachyon.conf.TachyonConf;
-import tachyon.master.MasterInfo;
-import tachyon.thrift.ClientFileInfo;
-import tachyon.thrift.FileDoesNotExistException;
-import tachyon.thrift.InvalidPathException;
+import tachyon.exception.FileDoesNotExistException;
+import tachyon.exception.InvalidPathException;
+import tachyon.exception.TachyonException;
+import tachyon.master.file.FileSystemMaster;
+import tachyon.thrift.FileInfo;
 
 /**
  * Servlet for downloading a file
  */
-public class WebInterfaceDownloadServlet extends HttpServlet {
+public final class WebInterfaceDownloadServlet extends HttpServlet {
   private static final long serialVersionUID = 7329267100965731815L;
 
-  private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
+  private final transient FileSystemMaster mFsMaster;
 
-  private final transient MasterInfo mMasterInfo;
-
-  public WebInterfaceDownloadServlet(MasterInfo masterInfo) {
-    mMasterInfo = masterInfo;
+  public WebInterfaceDownloadServlet(FileSystemMaster fsMaster) {
+    mFsMaster = Preconditions.checkNotNull(fsMaster);
   }
 
   /**
@@ -71,16 +69,20 @@ public class WebInterfaceDownloadServlet extends HttpServlet {
     }
     TachyonURI currentPath = new TachyonURI(requestPath);
     try {
-      ClientFileInfo clientFileInfo = mMasterInfo.getClientFileInfo(currentPath);
-      if (null == clientFileInfo) {
+      long fileId = mFsMaster.getFileId(currentPath);
+      FileInfo fileInfo = mFsMaster.getFileInfo(fileId);
+      if (fileInfo == null) {
         throw new FileDoesNotExistException(currentPath.toString());
       }
-      downloadFile(new TachyonURI(clientFileInfo.getPath()), request, response);
-    } catch (FileDoesNotExistException fdne) {
-      request.setAttribute("invalidPathError", "Error: Invalid Path " + fdne.getMessage());
+      downloadFile(new TachyonURI(fileInfo.getPath()), request, response);
+    } catch (FileDoesNotExistException e) {
+      request.setAttribute("invalidPathError", "Error: Invalid Path " + e.getMessage());
       getServletContext().getRequestDispatcher("/browse.jsp").forward(request, response);
-    } catch (InvalidPathException ipe) {
-      request.setAttribute("invalidPathError", "Error: Invalid Path " + ipe.getLocalizedMessage());
+    } catch (InvalidPathException e) {
+      request.setAttribute("invalidPathError", "Error: Invalid Path " + e.getLocalizedMessage());
+      getServletContext().getRequestDispatcher("/browse.jsp").forward(request, response);
+    } catch (TachyonException e) {
+      request.setAttribute("invalidPathError", "Error: " + e.getLocalizedMessage());
       getServletContext().getRequestDispatcher("/browse.jsp").forward(request, response);
     }
   }
@@ -95,16 +97,12 @@ public class WebInterfaceDownloadServlet extends HttpServlet {
    * @throws IOException
    */
   private void downloadFile(TachyonURI path, HttpServletRequest request,
-      HttpServletResponse response) throws FileDoesNotExistException, IOException {
-    String masterAddress =
-        Constants.HEADER + mMasterInfo.getMasterAddress().getHostName() + ":"
-            + mMasterInfo.getMasterAddress().getPort();
-    TachyonFS tachyonClient = TachyonFS.get(new TachyonURI(masterAddress), new TachyonConf());
-    TachyonFile tFile = tachyonClient.getFile(path);
-    if (tFile == null) {
-      throw new FileDoesNotExistException(path.toString());
-    }
-    long len = tFile.length();
+      HttpServletResponse response) throws FileDoesNotExistException, IOException,
+      InvalidPathException, TachyonException {
+    TachyonFileSystem tachyonClient = TachyonFileSystemFactory.get();
+    TachyonFile fd = tachyonClient.open(path);
+    FileInfo tFile = tachyonClient.getInfo(fd);
+    long len = tFile.getLength();
     String fileName = path.getName();
     response.setContentType("application/octet-stream");
     if (len <= Integer.MAX_VALUE) {
@@ -114,10 +112,13 @@ public class WebInterfaceDownloadServlet extends HttpServlet {
     }
     response.addHeader("Content-Disposition", "attachment;filename=" + fileName);
 
-    InStream is = null;
+    FileInStream is = null;
     ServletOutputStream out = null;
     try {
-      is = tFile.getInStream(ReadType.NO_CACHE);
+      // TODO(jiri): Should we use MasterContext here instead?
+      InStreamOptions op = new InStreamOptions.Builder(
+          new TachyonConf()).setTachyonStorageType(TachyonStorageType.NO_STORE).build();
+      is = tachyonClient.getInStream(fd, op);
       out = response.getOutputStream();
       ByteStreams.copy(is, out);
     } finally {
@@ -128,11 +129,6 @@ public class WebInterfaceDownloadServlet extends HttpServlet {
       if (is != null) {
         is.close();
       }
-    }
-    try {
-      tachyonClient.close();
-    } catch (IOException e) {
-      LOG.error(e.getMessage());
     }
   }
 }

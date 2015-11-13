@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -18,7 +18,7 @@ package tachyon.web;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
@@ -26,29 +26,30 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import tachyon.Constants;
-import tachyon.StorageLevelAlias;
+import tachyon.StorageTierAssoc;
 import tachyon.Version;
-import tachyon.master.DependencyVariables;
-import tachyon.master.MasterInfo;
-import tachyon.util.CommonUtils;
+import tachyon.conf.TachyonConf;
+import tachyon.master.TachyonMaster;
+import tachyon.underfs.UnderFileSystem;
+import tachyon.util.FormatUtils;
 
 /**
  * Servlet that provides data for viewing the general status of the filesystem.
  */
-public class WebInterfaceGeneralServlet extends HttpServlet {
+public final class WebInterfaceGeneralServlet extends HttpServlet {
   /**
    * Class to make referencing tiered storage information more intuitive.
    */
   public static class StorageTierInfo {
-    private final StorageLevelAlias mStorageLevelAlias;
+    private final String mStorageTierAlias;
     private final long mCapacityBytes;
     private final long mUsedBytes;
     private final int mUsedPercent;
     private final long mFreeBytes;
     private final int mFreePercent;
 
-    private StorageTierInfo(int storageLevelAliasValue, long capacityBytes, long usedBytes) {
-      mStorageLevelAlias = StorageLevelAlias.values()[storageLevelAliasValue - 1];
+    private StorageTierInfo(String storageTierAlias, long capacityBytes, long usedBytes) {
+      mStorageTierAlias = storageTierAlias;
       mCapacityBytes = capacityBytes;
       mUsedBytes = usedBytes;
       mFreeBytes = mCapacityBytes - mUsedBytes;
@@ -56,16 +57,16 @@ public class WebInterfaceGeneralServlet extends HttpServlet {
       mFreePercent = 100 - mUsedPercent;
     }
 
-    public String getStorageLevelAlias() {
-      return mStorageLevelAlias.name();
+    public String getStorageTierAlias() {
+      return mStorageTierAlias;
     }
 
     public String getCapacity() {
-      return CommonUtils.getSizeFromBytes(mCapacityBytes);
+      return FormatUtils.getSizeFromBytes(mCapacityBytes);
     }
 
     public String getFreeCapacity() {
-      return CommonUtils.getSizeFromBytes(mFreeBytes);
+      return FormatUtils.getSizeFromBytes(mFreeBytes);
     }
 
     public int getFreeSpacePercent() {
@@ -73,7 +74,7 @@ public class WebInterfaceGeneralServlet extends HttpServlet {
     }
 
     public String getUsedCapacity() {
-      return CommonUtils.getSizeFromBytes(mUsedBytes);
+      return FormatUtils.getSizeFromBytes(mUsedBytes);
     }
 
     public int getUsedSpacePercent() {
@@ -83,15 +84,15 @@ public class WebInterfaceGeneralServlet extends HttpServlet {
 
   private static final long serialVersionUID = 2335205655766736309L;
 
-  private final transient MasterInfo mMasterInfo;
+  private final transient TachyonMaster mMaster;
 
-  public WebInterfaceGeneralServlet(MasterInfo masterInfo) {
-    mMasterInfo = masterInfo;
+  public WebInterfaceGeneralServlet(TachyonMaster master) {
+    mMaster = master;
   }
 
   /**
    * Redirects the request to a JSP after populating attributes via populateValues.
-   * 
+   *
    * @param request The HttpServletRequest object
    * @param response The HttpServletResponse object
    * @throws ServletException
@@ -104,37 +105,30 @@ public class WebInterfaceGeneralServlet extends HttpServlet {
     getServletContext().getRequestDispatcher("/general.jsp").forward(request, response);
   }
 
-  @SuppressWarnings("unchecked")
   @Override
   protected void doPost(HttpServletRequest request, HttpServletResponse response)
       throws ServletException, IOException {
-    DependencyVariables.VARIABLES.clear();
-    for (String key : (Set<String>) request.getParameterMap().keySet()) {
-      if (key.startsWith("varName")) {
-        String value = request.getParameter("varVal" + key.substring(7));
-        if (value != null) {
-          DependencyVariables.VARIABLES.put(request.getParameter(key), value);
-        }
-      }
-    }
     populateValues(request);
     getServletContext().getRequestDispatcher("/general.jsp").forward(request, response);
   }
 
   /**
    * List the StorageTierInfo objects of each storage level(alias).
-   * 
-   * @return the list of StorageTierInfo objects.
+   *
+   * @return the list of StorageTierInfo objects, in order from highest tier to lowest
    */
   private StorageTierInfo[] generateOrderedStorageTierInfo() {
+    StorageTierAssoc globalStorageTierAssoc = mMaster.getBlockMaster().getGlobalStorageTierAssoc();
     List<StorageTierInfo> infos = new ArrayList<StorageTierInfo>();
-    List<Long> totalBytesOnTiers = mMasterInfo.getTotalBytesOnTiers();
-    List<Long> usedBytesOnTiers = mMasterInfo.getUsedBytesOnTiers();
+    Map<String, Long> totalBytesOnTiers = mMaster.getBlockMaster().getTotalBytesOnTiers();
+    Map<String, Long> usedBytesOnTiers = mMaster.getBlockMaster().getUsedBytesOnTiers();
 
-    for (int i = 0; i < totalBytesOnTiers.size(); i ++) {
-      if (totalBytesOnTiers.get(i) > 0) {
+    for (int ordinal = 0; ordinal < globalStorageTierAssoc.size(); ordinal ++) {
+      String tierAlias = globalStorageTierAssoc.getAlias(ordinal);
+      if (totalBytesOnTiers.containsKey(tierAlias) && totalBytesOnTiers.get(tierAlias) > 0) {
         StorageTierInfo info =
-            new StorageTierInfo(i + 1, totalBytesOnTiers.get(i), usedBytesOnTiers.get(i));
+            new StorageTierInfo(tierAlias, totalBytesOnTiers.get(tierAlias),
+                usedBytesOnTiers.get(tierAlias));
         infos.add(info);
       }
     }
@@ -145,55 +139,61 @@ public class WebInterfaceGeneralServlet extends HttpServlet {
 
   /**
    * Populates key, value pairs for UI display
-   * 
+   *
    * @param request The HttpServletRequest object
    * @throws IOException
    */
   private void populateValues(HttpServletRequest request) throws IOException {
     request.setAttribute("debug", Constants.DEBUG);
 
-    request.setAttribute("masterNodeAddress", mMasterInfo.getMasterAddress().toString());
+    request.setAttribute("masterNodeAddress", mMaster.getMasterAddress().toString());
 
     request.setAttribute("uptime",
-        Utils.convertMsToClockTime(System.currentTimeMillis() - mMasterInfo.getStarttimeMs()));
+        Utils.convertMsToClockTime(System.currentTimeMillis() - mMaster.getStarttimeMs()));
 
-    request.setAttribute("startTime", Utils.convertMsToDate(mMasterInfo.getStarttimeMs()));
+    request.setAttribute("startTime", Utils.convertMsToDate(mMaster.getStarttimeMs()));
 
     request.setAttribute("version", Version.VERSION);
 
-    request.setAttribute("liveWorkerNodes", Integer.toString(mMasterInfo.getWorkerCount()));
+    request.setAttribute("liveWorkerNodes",
+        Integer.toString(mMaster.getBlockMaster().getWorkerCount()));
 
-    request.setAttribute("capacity", CommonUtils.getSizeFromBytes(mMasterInfo.getCapacityBytes()));
+    request.setAttribute("capacity",
+        FormatUtils.getSizeFromBytes(mMaster.getBlockMaster().getCapacityBytes()));
 
-    request.setAttribute("usedCapacity", CommonUtils.getSizeFromBytes(mMasterInfo.getUsedBytes()));
+    request.setAttribute("usedCapacity",
+        FormatUtils.getSizeFromBytes(mMaster.getBlockMaster().getUsedBytes()));
 
     request
         .setAttribute("freeCapacity",
-            CommonUtils.getSizeFromBytes((mMasterInfo.getCapacityBytes() - mMasterInfo
-                .getUsedBytes())));
+            FormatUtils.getSizeFromBytes(mMaster.getBlockMaster().getCapacityBytes()
+                - mMaster.getBlockMaster().getUsedBytes()));
 
-    long sizeBytes = mMasterInfo.getUnderFsCapacityBytes();
+    // TODO(jiri): Should we use MasterContext here instead?
+    TachyonConf conf = new TachyonConf();
+    String ufsRoot = conf.get(Constants.UNDERFS_ADDRESS);
+    UnderFileSystem ufs = UnderFileSystem.get(ufsRoot, conf);
+
+    long sizeBytes = ufs.getSpace(ufsRoot, UnderFileSystem.SpaceType.SPACE_TOTAL);
     if (sizeBytes >= 0) {
-      request.setAttribute("diskCapacity", CommonUtils.getSizeFromBytes(sizeBytes));
+      request.setAttribute("diskCapacity", FormatUtils.getSizeFromBytes(sizeBytes));
     } else {
       request.setAttribute("diskCapacity", "UNKNOWN");
     }
 
-    sizeBytes = mMasterInfo.getUnderFsUsedBytes();
+    sizeBytes = ufs.getSpace(ufsRoot, UnderFileSystem.SpaceType.SPACE_USED);
     if (sizeBytes >= 0) {
-      request.setAttribute("diskUsedCapacity", CommonUtils.getSizeFromBytes(sizeBytes));
+      request.setAttribute("diskUsedCapacity", FormatUtils.getSizeFromBytes(sizeBytes));
     } else {
       request.setAttribute("diskUsedCapacity", "UNKNOWN");
     }
 
-    sizeBytes = mMasterInfo.getUnderFsFreeBytes();
+    sizeBytes = ufs.getSpace(ufsRoot, UnderFileSystem.SpaceType.SPACE_FREE);
     if (sizeBytes >= 0) {
-      request.setAttribute("diskFreeCapacity", CommonUtils.getSizeFromBytes(sizeBytes));
+      request.setAttribute("diskFreeCapacity", FormatUtils.getSizeFromBytes(sizeBytes));
     } else {
       request.setAttribute("diskFreeCapacity", "UNKNOWN");
     }
-
-    request.setAttribute("recomputeVariables", DependencyVariables.VARIABLES);
 
     StorageTierInfo[] infos = generateOrderedStorageTierInfo();
     request.setAttribute("storageTierInfos", infos);

@@ -15,98 +15,129 @@
 
 package tachyon.util;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedList;
+import java.util.List;
+
 import org.junit.Assert;
 import org.junit.Test;
 
-import tachyon.Constants;
-
 public class CommonUtilsTest {
+
   @Test
-  public void parseSpaceSizeTest() {
-    long max = 10240;
-    for (long k = 0; k < max; k ++) {
-      Assert.assertEquals(k / 10, CommonUtils.parseSpaceSize(k / 10.0 + "b"));
-      Assert.assertEquals(k / 10, CommonUtils.parseSpaceSize(k / 10.0 + "B"));
-      Assert.assertEquals(k / 10, CommonUtils.parseSpaceSize(k / 10.0 + ""));
+  public void getCurrentMsAndSleepMsTest() {
+    long delta = 100;
+    long startTime = CommonUtils.getCurrentMs();
+    CommonUtils.sleepMs(delta);
+    long currentTime = CommonUtils.getCurrentMs();
+
+    /* Check that currentTime falls into the interval [startTime + delta; startTime + 2*delta] */
+    Assert.assertTrue(startTime + delta <= currentTime);
+    Assert.assertTrue(currentTime <= 2 * delta + startTime);
+  }
+
+  @Test
+  public void listToStringTest() {
+    class TestCase {
+      List<Object> mInput;
+      String mExpected;
+
+      public TestCase(String expected, Object... objs) {
+        mExpected = expected;
+        mInput = Arrays.asList(objs);
+      }
     }
-    for (long k = 0; k < max; k ++) {
-      Assert.assertEquals(k * Constants.KB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "kb"));
-      Assert.assertEquals(k * Constants.KB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "Kb"));
-      Assert.assertEquals(k * Constants.KB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "KB"));
-      Assert.assertEquals(k * Constants.KB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "kB"));
-    }
-    for (long k = 0; k < max; k ++) {
-      Assert.assertEquals(k * Constants.MB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "mb"));
-      Assert.assertEquals(k * Constants.MB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "Mb"));
-      Assert.assertEquals(k * Constants.MB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "MB"));
-      Assert.assertEquals(k * Constants.MB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "mB"));
-    }
-    for (long k = 0; k < max; k ++) {
-      Assert.assertEquals(k * Constants.GB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "gb"));
-      Assert.assertEquals(k * Constants.GB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "Gb"));
-      Assert.assertEquals(k * Constants.GB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "GB"));
-      Assert.assertEquals(k * Constants.GB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "gB"));
-    }
-    for (long k = 0; k < max; k ++) {
-      Assert.assertEquals(k * Constants.TB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "tb"));
-      Assert.assertEquals(k * Constants.TB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "Tb"));
-      Assert.assertEquals(k * Constants.TB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "TB"));
-      Assert.assertEquals(k * Constants.TB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "tB"));
-    }
-    // We stop the pb test before 8192, since 8192 petabytes is beyond the scope of a java long.
-    for (long k = 0; k < 8192; k ++) {
-      Assert.assertEquals(k * Constants.PB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "pb"));
-      Assert.assertEquals(k * Constants.PB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "Pb"));
-      Assert.assertEquals(k * Constants.PB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "PB"));
-      Assert.assertEquals(k * Constants.PB / 10, CommonUtils.parseSpaceSize(k / 10.0 + "pB"));
+
+    List<TestCase> testCases = new LinkedList<TestCase>();
+    testCases.add(new TestCase(""));
+    testCases.add(new TestCase("foo", "foo"));
+    testCases.add(new TestCase("foo bar", "foo", "bar"));
+    testCases.add(new TestCase("1", 1));
+    testCases.add(new TestCase("1 2 3", 1, 2, 3));
+
+    for (TestCase testCase : testCases) {
+      Assert.assertEquals(testCase.mExpected, CommonUtils.listToString(testCase.mInput));
     }
   }
 
   @Test
-  public void concatPath() {
-    Assert.assertEquals("", CommonUtils.concatPath());
-    Assert.assertEquals("/", CommonUtils.concatPath("/"));
-    Assert.assertEquals("/", CommonUtils.concatPath("/", ""));
-    Assert.assertEquals("/bar", CommonUtils.concatPath("/", "bar"));
+  public void toStringArrayTest() {
+    class TestCase {
+      String[] mExpected;
 
-    Assert.assertEquals("foo", CommonUtils.concatPath("foo"));
-    Assert.assertEquals("/foo", CommonUtils.concatPath("/foo"));
-    Assert.assertEquals("/foo", CommonUtils.concatPath("/foo", ""));
+      public TestCase(String... strings) {
+        mExpected = strings;
+      }
+    }
 
-    // Null
-    Assert.assertEquals("/", CommonUtils.concatPath("/", null));
-    Assert.assertEquals("foo", CommonUtils.concatPath(null, "foo"));
+    List<TestCase> testCases = new LinkedList<TestCase>();
+    testCases.add(new TestCase());
+    testCases.add(new TestCase("foo"));
+    testCases.add(new TestCase("foo", "bar"));
 
-    // Join base without trailing "/"
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo", "bar"));
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo", "bar/"));
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo", "/bar"));
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo", "/bar/"));
+    for (TestCase testCase : testCases) {
+      ArrayList<String> input = new ArrayList<String>();
+      for (String s : testCase.mExpected) {
+        input.add(s);
+      }
+      String[] got = CommonUtils.toStringArray(input);
+      Assert.assertEquals(testCase.mExpected.length, got.length);
+      for (int k = 0; k < got.length; k ++) {
+        Assert.assertEquals(testCase.mExpected[k], got[k]);
+      }
+    }
+  }
 
-    // Join base with trailing "/"
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo/", "bar"));
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo/", "bar/"));
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo/", "/bar"));
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo/", "/bar/"));
+  @Test
+  public void createNewClassInstanceTest() {
+    class TestCase {
+      Class<?> mCls;
+      Class<?>[] mCtorClassArgs;
+      Object[] mCtorArgs;
+      String mExpected;
 
-    // Whitespace must be trimmed.
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo ", "bar  "));
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo ", "  bar"));
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo ", "  bar  "));
+      public TestCase(String expected, Class<?> cls, Class<?>[] ctorClassArgs, Object... ctorArgs) {
+        mCls = cls;
+        mCtorClassArgs = ctorClassArgs;
+        mCtorArgs = ctorArgs;
+        mExpected = expected;
+      }
+    }
 
-    // Redundant separator must be trimmed.
-    Assert.assertEquals("/foo/bar", CommonUtils.concatPath("/foo/", "bar//"));
+    List<TestCase> testCases = new LinkedList<TestCase>();
+    testCases.add(new TestCase("hello", TestClassA.class, null));
+    testCases.add(new TestCase("1", TestClassB.class, new Class[] {int.class}, 1));
 
-    // Multiple components to join.
-    Assert.assertEquals("/foo/bar/a/b/c", CommonUtils.concatPath("/foo", "bar", "a", "b", "c"));
-    Assert.assertEquals("/foo/bar/b/c", CommonUtils.concatPath("/foo", "bar", "", "b", "c"));
+    for (TestCase testCase : testCases) {
+      try {
+        Object o =
+            CommonUtils.createNewClassInstance(testCase.mCls, testCase.mCtorClassArgs,
+                testCase.mCtorArgs);
+        Assert.assertEquals(o.toString(), testCase.mExpected);
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
+  }
 
-    // Non-string
-    Assert.assertEquals("/foo/bar/1", CommonUtils.concatPath("/foo", "bar", 1));
-    Assert.assertEquals("/foo/bar/2", CommonUtils.concatPath("/foo", "bar", 2L));
+  static class TestClassA {
+    public TestClassA() {}
 
-    // Header
-    Assert.assertEquals(Constants.HEADER + "host:port/foo/bar",
-        CommonUtils.concatPath(Constants.HEADER + "host:port", "/foo", "bar"));
+    public String toString() {
+      return "hello";
+    }
+  }
+
+  static class TestClassB {
+    int mX;
+
+    public TestClassB(int x) {
+      mX = x;
+    }
+
+    public String toString() {
+      return Integer.toString(mX);
+    }
   }
 }

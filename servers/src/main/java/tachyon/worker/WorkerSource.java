@@ -20,13 +20,14 @@ import com.codahale.metrics.Gauge;
 import com.codahale.metrics.MetricRegistry;
 
 import tachyon.metrics.source.Source;
-import tachyon.worker.block.BlockWorker;
+import tachyon.worker.block.BlockDataManager;
 
 /**
  * A WorkerSource collects a Worker's internal state.
  */
 public class WorkerSource implements Source {
   private static final String WORKER_SOURCE_NAME = "worker";
+  private boolean mGaugesRegistered = false;
   private final MetricRegistry mMetricRegistry = new MetricRegistry();
   private final Counter mBlocksAccessed =
       mMetricRegistry.counter(MetricRegistry.name("BlocksAccessed"));
@@ -131,33 +132,38 @@ public class WorkerSource implements Source {
     mBytesWrittenUfs.inc(n);
   }
 
-  public void registerGauges(final BlockWorker worker) {
+  public void registerGauges(final BlockDataManager blockDataManager) {
+    if (mGaugesRegistered) {
+      return;
+    }
     mMetricRegistry.register(MetricRegistry.name("CapacityTotal"), new Gauge<Long>() {
       @Override
       public Long getValue() {
-        return worker.getStoreMeta().getCapacityBytes();
+        return blockDataManager.getStoreMeta().getCapacityBytes();
       }
     });
 
     mMetricRegistry.register(MetricRegistry.name("CapacityUsed"), new Gauge<Long>() {
       @Override
       public Long getValue() {
-        return worker.getStoreMeta().getUsedBytes();
+        return blockDataManager.getStoreMeta().getUsedBytes();
       }
     });
 
     mMetricRegistry.register(MetricRegistry.name("CapacityFree"), new Gauge<Long>() {
       @Override
       public Long getValue() {
-        return worker.getStoreMeta().getCapacityBytes() - worker.getStoreMeta().getUsedBytes();
+        return blockDataManager.getStoreMeta().getCapacityBytes()
+                - blockDataManager.getStoreMeta().getUsedBytes();
       }
     });
 
     mMetricRegistry.register(MetricRegistry.name("BlocksCached"), new Gauge<Integer>() {
       @Override
       public Integer getValue() {
-        return worker.getStoreMeta().getNumberOfBlocks();
+        return blockDataManager.getStoreMeta().getNumberOfBlocks();
       }
     });
+    mGaugesRegistered = true;
   }
 }

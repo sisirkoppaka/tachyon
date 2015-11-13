@@ -25,8 +25,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.UUID;
 
-import com.google.common.base.Preconditions;
-
 import org.jets3t.service.S3Service;
 import org.jets3t.service.ServiceException;
 import org.jets3t.service.model.S3Object;
@@ -34,8 +32,10 @@ import org.jets3t.service.utils.Mimetypes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.base.Preconditions;
+
 import tachyon.Constants;
-import tachyon.util.CommonUtils;
+import tachyon.util.io.PathUtils;
 
 /**
  * This class creates a streaming interface for writing a file in s3. The data will be persisted
@@ -68,7 +68,7 @@ public class S3OutputStream extends OutputStream {
     mBucketName = bucketName;
     mKey = key;
     mClient = client;
-    mFile = new File(CommonUtils.concatPath("/tmp", UUID.randomUUID()));
+    mFile = new File(PathUtils.concatPath("/tmp", UUID.randomUUID()));
     try {
       mHash = MessageDigest.getInstance("MD5");
       mLocalOutputStream =
@@ -117,12 +117,12 @@ public class S3OutputStream extends OutputStream {
       if (mHash != null) {
         obj.setMd5Hash(mHash.digest());
       } else {
-        LOG.warn("MD5 was not computed for: " + mKey);
+        LOG.warn("MD5 was not computed for: {}", mKey);
       }
       mClient.putObject(mBucketName, obj);
       mFile.delete();
     } catch (ServiceException se) {
-      LOG.error("Failed to upload " + mKey + ". Temporary file @ " + mFile.getPath());
+      LOG.error("Failed to upload {}. Temporary file @ {}", mKey, mFile.getPath());
       throw new IOException(se);
     }
   }

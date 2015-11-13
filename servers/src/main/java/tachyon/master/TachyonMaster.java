@@ -17,15 +17,14 @@ package tachyon.master;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
+import org.apache.thrift.TMultiplexedProcessor;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TThreadPoolServer;
-import org.apache.thrift.transport.TFramedTransport;
+import org.apache.thrift.server.TThreadPoolServer.Args;
 import org.apache.thrift.transport.TServerSocket;
-import org.apache.thrift.transport.TTransportException;
+import org.apache.thrift.transport.TTransportFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,16 +32,20 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 
 import tachyon.Constants;
-import tachyon.LeaderSelectorClient;
 import tachyon.TachyonURI;
 import tachyon.Version;
 import tachyon.conf.TachyonConf;
+import tachyon.master.block.BlockMaster;
+import tachyon.master.file.FileSystemMaster;
+import tachyon.master.journal.ReadWriteJournal;
+import tachyon.master.lineage.LineageMaster;
+import tachyon.master.rawtable.RawTableMaster;
 import tachyon.metrics.MetricsSystem;
-import tachyon.thrift.MasterService;
+import tachyon.security.authentication.AuthenticationUtils;
 import tachyon.underfs.UnderFileSystem;
-import tachyon.util.CommonUtils;
-import tachyon.util.NetworkUtils;
-import tachyon.util.ThreadFactoryUtils;
+import tachyon.util.LineageUtils;
+import tachyon.util.network.NetworkAddressUtils;
+import tachyon.util.network.NetworkAddressUtils.ServiceType;
 import tachyon.web.MasterUIWebServer;
 import tachyon.web.UIWebServer;
 
@@ -54,83 +57,87 @@ public class TachyonMaster {
 
   public static void main(String[] args) {
     if (args.length != 0) {
-      LOG.info("java -cp target/tachyon-" + Version.VERSION + "-jar-with-dependencies.jar "
-          + "tachyon.Master");
+      LOG.info("java -cp {} tachyon.Master", Version.TACHYON_JAR);
       System.exit(-1);
     }
 
     try {
-      TachyonMaster master = new TachyonMaster(new TachyonConf());
-      master.start();
+      Factory.createMaster().start();
     } catch (Exception e) {
       LOG.error("Uncaught exception terminating Master", e);
       System.exit(-1);
     }
   }
 
-  private boolean mIsStarted;
-  private MasterInfo mMasterInfo;
-  private InetSocketAddress mMasterAddress;
-  private UIWebServer mWebServer;
-  private TServerSocket mServerTServerSocket;
-  private TServer mMasterServiceServer;
-  private MasterServiceHandler mMasterServiceHandler;
-  private MetricsSystem mMasterMetricsSystem;
-  private Journal mJournal;
-  private EditLogProcessor mEditLogProcessor;
-  private int mWebPort;
-
-  private int mMaxWorkerThreads;
-  private int mMinWorkerThreads;
-  private boolean mZookeeperMode = false;
-  private final ExecutorService mExecutorService = Executors.newFixedThreadPool(2,
-      ThreadFactoryUtils.build("heartbeat-master-%d", true));
-
-  private LeaderSelectorClient mLeaderSelectorClient = null;
-
-  /** metadata port */
+  /** Maximum number of threads to serve the rpc server */
+  private final int mMaxWorkerThreads;
+  /** Minimum number of threads to serve the rpc server */
+  private final int mMinWorkerThreads;
+  /** The port for the RPC server */
   private final int mPort;
+  /** The socket for thrift rpc server */
+  private final TServerSocket mTServerSocket;
+  /** The address for the rpc server */
+  private final InetSocketAddress mMasterAddress;
+  /** The master metrics system */
+  private final MetricsSystem mMasterMetricsSystem;
 
-  private final TachyonConf mTachyonConf;
+  // The masters
+  /** The master managing all block metadata */
+  protected BlockMaster mBlockMaster;
+  /** The master managing all file system related metadata */
+  protected FileSystemMaster mFileSystemMaster;
+  /** The master managing all raw table related metadata */
+  protected RawTableMaster mRawTableMaster;
+  /** The master managing all lineage related metadata */
+  protected LineageMaster mLineageMaster;
 
-  public TachyonMaster(TachyonConf tachyonConf) {
-    mTachyonConf = tachyonConf;
+  // The read-write journals for the masters
+  /** The journal for the block master */
+  protected final ReadWriteJournal mBlockMasterJournal;
+  /** The journal for the file system master */
+  protected final ReadWriteJournal mFileSystemMasterJournal;
+  /** The journal for the raw table master */
+  protected final ReadWriteJournal mRawTableMasterJournal;
+  /** The journal for the lineage master */
+  protected final ReadWriteJournal mLineageMasterJournal;
 
-    int port = mTachyonConf.getInt(Constants.MASTER_PORT, Constants.DEFAULT_MASTER_PORT);
-    int webPort = mTachyonConf.getInt(Constants.MASTER_WEB_PORT, Constants.DEFAULT_MASTER_WEB_PORT);
+  /** The web ui server */
+  private UIWebServer mWebServer = null;
+  /** The RPC server */
+  private TServer mMasterServiceServer = null;
 
-    TachyonConf.assertValidPort(port, mTachyonConf);
-    TachyonConf.assertValidPort(webPort, mTachyonConf);
+  /** is true if the master is serving the RPC server */
+  private boolean mIsServing = false;
+  /** The start time for when the master started serving the RPC server */
+  private long mStartTimeMs = -1;
 
-    String hostnameExternal = mTachyonConf.get(Constants.MASTER_HOSTNAME, "localhost");
-    // The master listens to the MASTER_HOSTNAME_LISTENING configuration option.
-    // MASTER_HOSTNAME_LISTENING defaults to MASTER_HOSTNAME if unspecified. If set to
-    // MASTER_HOSTNAME_LISTENING_WILDCARD, server listens to all addresses.
-    String hostnameListening =
-        mTachyonConf.get(Constants.MASTER_HOSTNAME_LISTENING, hostnameExternal);
-
-    InetSocketAddress address = new InetSocketAddress(hostnameExternal, port);
-    InetSocketAddress addressListening;
-    if (hostnameListening.equals(Constants.MASTER_HOSTNAME_LISTENING_WILDCARD)) {
-      addressListening = new InetSocketAddress(port);
-    } else {
-      addressListening = new InetSocketAddress(hostnameListening, port);
+  /**
+   * Factory for creating {@link TachyonMaster} or {@link TachyonMasterFaultTolerant} based on
+   * {@link TachyonConf}.
+   */
+  public static class Factory {
+    /**
+     * @return {@link TachyonMasterFaultTolerant} if tachyonConf is set to use zookeeper, otherwise,
+     *         return {@link TachyonMaster}.
+     */
+    public static TachyonMaster createMaster() {
+      if (MasterContext.getConf().getBoolean(Constants.ZOOKEEPER_ENABLED)) {
+        return new TachyonMasterFaultTolerant();
+      }
+      return new TachyonMaster();
     }
+  }
 
-    mZookeeperMode = mTachyonConf.getBoolean(Constants.USE_ZOOKEEPER, false);
+  protected TachyonMaster() {
+    TachyonConf conf = MasterContext.getConf();
 
-    mIsStarted = false;
-    mWebPort = webPort;
-    mMinWorkerThreads =
-        mTachyonConf.getInt(Constants.MASTER_MIN_WORKER_THREADS, Runtime.getRuntime()
-            .availableProcessors());
+    mMinWorkerThreads = conf.getInt(Constants.MASTER_WORKER_THREADS_MIN);
+    mMaxWorkerThreads = conf.getInt(Constants.MASTER_WORKER_THREADS_MAX);
 
-    mMaxWorkerThreads =
-        mTachyonConf.getInt(Constants.MASTER_MAX_WORKER_THREADS,
-            Constants.DEFAULT_MASTER_MAX_WORKER_THREADS);
     Preconditions.checkArgument(mMaxWorkerThreads >= mMinWorkerThreads,
-        Constants.MASTER_MAX_WORKER_THREADS + " can not be less than "
-            + Constants.MASTER_MIN_WORKER_THREADS);
+        Constants.MASTER_WORKER_THREADS_MAX + " can not be less than "
+            + Constants.MASTER_WORKER_THREADS_MIN);
 
     try {
       // Extract the port from the generated socket.
@@ -138,39 +145,40 @@ public class TachyonMaster {
       // use (any random free port).
       // In a production or any real deployment setup, port '0' should not be used as it will make
       // deployment more complicated.
-      mServerTServerSocket = new TServerSocket(addressListening);
-      mPort = NetworkUtils.getPort(mServerTServerSocket);
+      mTServerSocket =
+          new TServerSocket(NetworkAddressUtils.getBindAddress(ServiceType.MASTER_RPC, conf));
+      mPort = NetworkAddressUtils.getThriftPort(mTServerSocket);
+      // reset master port
+      conf.set(Constants.MASTER_PORT, Integer.toString(mPort));
+      mMasterAddress = NetworkAddressUtils.getConnectAddress(ServiceType.MASTER_RPC, conf);
 
-      String tachyonHome = mTachyonConf.get(Constants.TACHYON_HOME, Constants.DEFAULT_HOME);
-      String journalFolder =
-          mTachyonConf.get(Constants.MASTER_JOURNAL_FOLDER, tachyonHome + "/journal/");
-      String formatFilePrefix =
-          mTachyonConf.get(Constants.MASTER_FORMAT_FILE_PREFIX, Constants.FORMAT_FILE_PREFIX);
-      UnderFileSystem ufs = UnderFileSystem.get(journalFolder, mTachyonConf);
-      if (ufs.providesStorage()) {
-        Preconditions.checkState(isFormatted(journalFolder, formatFilePrefix),
-            "Tachyon was not formatted! The journal folder is " + journalFolder);
+      // Check the journal directory
+      String journalDirectory = conf.get(Constants.MASTER_JOURNAL_FOLDER);
+      if (!journalDirectory.endsWith(TachyonURI.SEPARATOR)) {
+        journalDirectory += TachyonURI.SEPARATOR;
       }
-      mMasterAddress = new InetSocketAddress(NetworkUtils.getFqdnHost(address), mPort);
-      mJournal = new Journal(journalFolder, "image.data", "log.data", mTachyonConf);
-      mMasterInfo = new MasterInfo(mMasterAddress, mJournal, mExecutorService, mTachyonConf);
+      Preconditions.checkState(isJournalFormatted(journalDirectory),
+          "Tachyon was not formatted! The journal folder is " + journalDirectory);
 
-      mMasterMetricsSystem = new MetricsSystem("master", mTachyonConf);
+      // Create the journals.
+      mBlockMasterJournal = new ReadWriteJournal(BlockMaster.getJournalDirectory(journalDirectory));
+      mFileSystemMasterJournal =
+          new ReadWriteJournal(FileSystemMaster.getJournalDirectory(journalDirectory));
+      mRawTableMasterJournal =
+          new ReadWriteJournal(RawTableMaster.getJournalDirectory(journalDirectory));
+      mLineageMasterJournal =
+          new ReadWriteJournal(LineageMaster.getJournalDirectory(journalDirectory));
 
-      if (mZookeeperMode) {
-        // InetSocketAddress.toString causes test issues, so build the string by hand
-        String zkName = NetworkUtils.getFqdnHost(mMasterAddress) + ":" + mMasterAddress.getPort();
-        String zkAddress = mTachyonConf.get(Constants.ZOOKEEPER_ADDRESS, null);
-        String zkElectionPath = mTachyonConf.get(Constants.ZOOKEEPER_ELECTION_PATH, "/election");
-        String zkLeaderPath = mTachyonConf.get(Constants.ZOOKEEPER_LEADER_PATH, "/leader");
-        mLeaderSelectorClient =
-            new LeaderSelectorClient(zkAddress, zkElectionPath, zkLeaderPath, zkName);
-        mEditLogProcessor =
-            new EditLogProcessor(mJournal, journalFolder, mMasterInfo, mTachyonConf);
-        // TODO move this to executor service when the shared thread patch goes in
-        Thread logProcessor = new Thread(mEditLogProcessor);
-        logProcessor.start();
+      mBlockMaster = new BlockMaster(mBlockMasterJournal);
+      mFileSystemMaster = new FileSystemMaster(mBlockMaster, mFileSystemMasterJournal);
+      mRawTableMaster = new RawTableMaster(mFileSystemMaster, mRawTableMasterJournal);
+      if (LineageUtils.isLineageEnabled(MasterContext.getConf())) {
+        mLineageMaster = new LineageMaster(mFileSystemMaster, mLineageMasterJournal);
       }
+
+      MasterContext.getMasterSource().registerGauges(this);
+      mMasterMetricsSystem = new MetricsSystem("master", MasterContext.getConf());
+      mMasterMetricsSystem.registerSource(MasterContext.getMasterSource());
     } catch (Exception e) {
       LOG.error(e.getMessage(), e);
       throw Throwables.propagate(e);
@@ -178,185 +186,231 @@ public class TachyonMaster {
   }
 
   /**
-   * Get MasterInfo instance for Unit Test
-   *
-   * @return MasterInfo of the Master
+   * @return the externally resolvable address of this master
    */
-  MasterInfo getMasterInfo() {
-    return mMasterInfo;
+  public InetSocketAddress getMasterAddress() {
+    return mMasterAddress;
   }
 
   /**
-   * Gets the underlying {@link tachyon.conf.TachyonConf} instance for the Worker.
-   *
-   * @return TachyonConf of the Master
+   * @return the actual bind hostname on RPC service (used by unit test only)
    */
-  public TachyonConf getTachyonConf() {
-    return mTachyonConf;
+  public String getRPCBindHost() {
+    return NetworkAddressUtils.getThriftSocket(mTServerSocket).getLocalSocketAddress().toString();
   }
 
   /**
-   * Get the port used by unit test only
+   * @return the actual port that the RPC service is listening on (used by unit test only)
    */
-  int getMetaPort() {
+  public int getRPCLocalPort() {
     return mPort;
   }
 
-  private boolean isFormatted(String folder, String path) throws IOException {
-    if (!folder.endsWith(TachyonURI.SEPARATOR)) {
-      folder += TachyonURI.SEPARATOR;
+  /**
+   * @return the actual bind hostname on web service (used by unit test only)
+   */
+  public String getWebBindHost() {
+    return mWebServer.getBindHost();
+  }
+
+  /**
+   * @return the actual port that the web service is listening on (used by unit test only)
+   */
+  public int getWebLocalPort() {
+    return mWebServer.getLocalPort();
+  }
+
+  /**
+   * @return internal {@link FileSystemMaster}, for unit test only
+   */
+  public FileSystemMaster getFileSystemMaster() {
+    return mFileSystemMaster;
+  }
+
+  /**
+   * @return internal {@link RawTableMaster}, for unit test only
+   */
+  public RawTableMaster getRawTableMaster() {
+    return mRawTableMaster;
+  }
+
+  /**
+   * @return internal {@link BlockMaster}, for unit test only
+   */
+  public BlockMaster getBlockMaster() {
+    return mBlockMaster;
+  }
+
+  /**
+   * @return the millisecond when Tachyon Master starts serving, return -1 when not started
+   */
+  public long getStarttimeMs() {
+    return mStartTimeMs;
+  }
+
+  /**
+   * @return true if the system is the leader (serving the rpc server), false otherwise
+   */
+  boolean isServing() {
+    return mIsServing;
+  }
+
+  /**
+   * Starts the Tachyon master server.
+   */
+  public void start() throws Exception {
+    startMasters(true);
+    startServing();
+  }
+
+  /**
+   * Stops the Tachyon master server. Should only be called by tests.
+   */
+  public void stop() throws Exception {
+    if (mIsServing) {
+      LOG.info("Stopping Tachyon Master @ {}", mMasterAddress);
+      stopServing();
+      stopMasters();
+      mTServerSocket.close();
+      mIsServing = false;
     }
-    UnderFileSystem ufs = UnderFileSystem.get(folder, mTachyonConf);
-    String[] files = ufs.list(folder);
+  }
+
+  protected void startMasters(boolean isLeader) {
+    try {
+      connectToUFS();
+
+      mBlockMaster.start(isLeader);
+      mFileSystemMaster.start(isLeader);
+      mRawTableMaster.start(isLeader);
+      if (LineageUtils.isLineageEnabled(MasterContext.getConf())) {
+        mLineageMaster.start(isLeader);
+      }
+
+    } catch (IOException e) {
+      LOG.error(e.getMessage(), e);
+      throw Throwables.propagate(e);
+    }
+  }
+
+  protected void stopMasters() {
+    try {
+      if (LineageUtils.isLineageEnabled(MasterContext.getConf())) {
+        mLineageMaster.stop();
+      }
+      mBlockMaster.stop();
+      mFileSystemMaster.stop();
+      mRawTableMaster.stop();
+    } catch (IOException e) {
+      LOG.error(e.getMessage(), e);
+      throw Throwables.propagate(e);
+    }
+  }
+
+  private void startServing() {
+    startServing("", "");
+  }
+
+  protected void startServing(String startMessage, String stopMessage) {
+    mMasterMetricsSystem.start();
+    startServingWebServer();
+    LOG.info("Tachyon Master version {} started @ {} {}", Version.VERSION, mMasterAddress,
+        startMessage);
+    startServingRPCServer();
+    LOG.info("Tachyon Master version {} ended @ {} {}", Version.VERSION, mMasterAddress,
+        stopMessage);
+  }
+
+  protected void startServingWebServer() {
+    // start web ui
+    TachyonConf conf = MasterContext.getConf();
+    mWebServer =
+        new MasterUIWebServer(ServiceType.MASTER_WEB, NetworkAddressUtils.getBindAddress(
+            ServiceType.MASTER_WEB, conf), this, conf);
+    // Add the metrics servlet to the web server, this must be done after the metrics system starts
+    mWebServer.addHandler(mMasterMetricsSystem.getServletHandler());
+    mWebServer.startWebServer();
+  }
+
+  protected void startServingRPCServer() {
+    // set up multiplexed thrift processors
+    TMultiplexedProcessor processor = new TMultiplexedProcessor();
+    processor.registerProcessor(mBlockMaster.getServiceName(), mBlockMaster.getProcessor());
+    processor.registerProcessor(mFileSystemMaster.getServiceName(),
+        mFileSystemMaster.getProcessor());
+    processor.registerProcessor(mRawTableMaster.getServiceName(), mRawTableMaster.getProcessor());
+    if (LineageUtils.isLineageEnabled(MasterContext.getConf())) {
+      processor.registerProcessor(mLineageMaster.getServiceName(), mLineageMaster.getProcessor());
+    }
+
+    // Return a TTransportFactory based on the authentication type
+    TTransportFactory transportFactory;
+    try {
+      transportFactory = AuthenticationUtils.getServerTransportFactory(MasterContext.getConf());
+    } catch (IOException ioe) {
+      throw Throwables.propagate(ioe);
+    }
+
+    // create master thrift service with the multiplexed processor.
+    Args args = new TThreadPoolServer.Args(mTServerSocket).maxWorkerThreads(mMaxWorkerThreads)
+        .minWorkerThreads(mMinWorkerThreads).processor(processor).transportFactory(transportFactory)
+        .protocolFactory(new TBinaryProtocol.Factory(true, true));
+    args.stopTimeoutVal = MasterContext.getConf().getInt(Constants.THRIFT_STOP_TIMEOUT_SECONDS);
+    mMasterServiceServer = new TThreadPoolServer(args);
+
+    // start thrift rpc server
+    mIsServing = true;
+    mStartTimeMs = System.currentTimeMillis();
+    mMasterServiceServer.serve();
+  }
+
+  protected void stopServing() throws Exception {
+    if (mMasterServiceServer != null) {
+      mMasterServiceServer.stop();
+      mMasterServiceServer = null;
+    }
+    if (mWebServer != null) {
+      mWebServer.shutdownWebServer();
+      mWebServer = null;
+    }
+    mMasterMetricsSystem.stop();
+    mIsServing = false;
+  }
+
+  /**
+   * Checks to see if the journal directory is formatted.
+   *
+   * @param journalDirectory The journal directory to check
+   * @return true if the journal directory was formatted previously, false otherwise
+   * @throws IOException
+   */
+  private boolean isJournalFormatted(String journalDirectory) throws IOException {
+    TachyonConf conf = MasterContext.getConf();
+    UnderFileSystem ufs = UnderFileSystem.get(journalDirectory, conf);
+    if (!ufs.providesStorage()) {
+      // TODO(gene): Should the journal really be allowed on a ufs without storage?
+      // This ufs doesn't provide storage. Allow the master to use this ufs for the journal.
+      LOG.info("Journal directory doesn't provide storage: {}", journalDirectory);
+      return true;
+    }
+    String[] files = ufs.list(journalDirectory);
     if (files == null) {
       return false;
     }
+    // Search for the format file.
+    String formatFilePrefix = conf.get(Constants.MASTER_FORMAT_FILE_PREFIX);
     for (String file : files) {
-      if (file.startsWith(path)) {
+      if (file.startsWith(formatFilePrefix)) {
         return true;
       }
     }
     return false;
   }
 
-  /**
-   * Get whether the system is the leader in zookeeper mode, for unit test only.
-   *
-   * @return true if the system is the leader under zookeeper mode, false otherwise.
-   */
-  boolean isStarted() {
-    return mIsStarted;
-  }
-
-  /**
-   * Get whether the system is in zookeeper mode, for unit test only.
-   *
-   * @return true if the master is under zookeeper mode, false otherwise.
-   */
-  boolean isZookeeperMode() {
-    return mZookeeperMode;
-  }
-
   private void connectToUFS() throws IOException {
-    String tachyonHome = mTachyonConf.get(Constants.TACHYON_HOME, Constants.DEFAULT_HOME);
-    String ufsAddress =
-        mTachyonConf.get(Constants.UNDERFS_ADDRESS, tachyonHome + "/underFSStorage");
-    UnderFileSystem ufs = UnderFileSystem.get(ufsAddress, mTachyonConf);
-    ufs.connectFromMaster(mTachyonConf, NetworkUtils.getFqdnHost(mMasterAddress));
-  }
-
-  private void setup() throws IOException, TTransportException {
-    connectToUFS();
-    if (mZookeeperMode) {
-      mEditLogProcessor.stop();
-    }
-    mMasterInfo.init();
-
-    mWebServer =
-        new MasterUIWebServer("Tachyon Master Server", new InetSocketAddress(
-            NetworkUtils.getFqdnHost(mMasterAddress), mWebPort), mMasterInfo, mTachyonConf);
-
-    mMasterServiceHandler = new MasterServiceHandler(mMasterInfo);
-    MasterService.Processor<MasterServiceHandler> masterServiceProcessor =
-        new MasterService.Processor<MasterServiceHandler>(mMasterServiceHandler);
-
-    mMasterServiceServer =
-        new TThreadPoolServer(new TThreadPoolServer.Args(mServerTServerSocket)
-            .maxWorkerThreads(mMaxWorkerThreads).minWorkerThreads(mMinWorkerThreads)
-            .processor(masterServiceProcessor).transportFactory(new TFramedTransport.Factory())
-            .protocolFactory(new TBinaryProtocol.Factory(true, true)));
-
-    mIsStarted = true;
-  }
-
-  /**
-   * Start a Tachyon master server.
-   */
-  public void start() {
-    if (mZookeeperMode) {
-      try {
-        mLeaderSelectorClient.start();
-      } catch (IOException e) {
-        LOG.error(e.getMessage(), e);
-        throw Throwables.propagate(e);
-      }
-
-      Thread currentThread = Thread.currentThread();
-      mLeaderSelectorClient.setCurrentMasterThread(currentThread);
-      boolean running = false;
-      while (true) {
-        if (mLeaderSelectorClient.isLeader()) {
-          if (!running) {
-            running = true;
-            try {
-              setup();
-            } catch (IOException e) {
-              LOG.error(e.getMessage(), e);
-              throw Throwables.propagate(e);
-            } catch (TTransportException e) {
-              LOG.error(e.getMessage(), e);
-              throw Throwables.propagate(e);
-            }
-            mMasterMetricsSystem.registerSource(mMasterInfo.getMasterSource());
-            mMasterMetricsSystem.start();
-            mWebServer.addHandler(mMasterMetricsSystem.getServletHandler());
-            mWebServer.startWebServer();
-            LOG.info("The master (leader) server started @ " + mMasterAddress);
-            mMasterServiceServer.serve();
-            LOG.info("The master (previous leader) server ended @ " + mMasterAddress);
-            mJournal.close();
-          }
-        } else {
-          if (running) {
-            mMasterServiceServer.stop();
-            running = false;
-          }
-        }
-
-        CommonUtils.sleepMs(LOG, 100);
-      }
-    } else {
-      try {
-        setup();
-      } catch (IOException e) {
-        LOG.error(e.getMessage(), e);
-        throw Throwables.propagate(e);
-      } catch (TTransportException e) {
-        LOG.error(e.getMessage(), e);
-        throw Throwables.propagate(e);
-      }
-
-      mMasterMetricsSystem.registerSource(mMasterInfo.getMasterSource());
-      mMasterMetricsSystem.start();
-      mWebServer.addHandler(mMasterMetricsSystem.getServletHandler());
-      mWebServer.startWebServer();
-      LOG.info("Tachyon Master version " + Version.VERSION + " started @ " + mMasterAddress);
-      mMasterServiceServer.serve();
-      LOG.info("Tachyon Master version " + Version.VERSION + " ended @ " + mMasterAddress);
-    }
-  }
-
-  /*
-   * Stop a Tachyon master server.
-   */
-  public void stop() throws Exception {
-    if (mIsStarted) {
-      mWebServer.shutdownWebServer();
-      mMasterInfo.stop();
-      mJournal.close();
-      mMasterMetricsSystem.stop();
-      mMasterServiceServer.stop();
-      mServerTServerSocket.close();
-      mExecutorService.shutdown();
-      mIsStarted = false;
-    }
-    if (mZookeeperMode) {
-      if (mLeaderSelectorClient != null) {
-        mLeaderSelectorClient.close();
-      }
-      if (mEditLogProcessor != null) {
-        mEditLogProcessor.stop();
-      }
-    }
+    TachyonConf conf = MasterContext.getConf();
+    String ufsAddress = conf.get(Constants.UNDERFS_ADDRESS);
+    UnderFileSystem ufs = UnderFileSystem.get(ufsAddress, conf);
+    ufs.connectFromMaster(conf, NetworkAddressUtils.getConnectHost(ServiceType.MASTER_RPC, conf));
   }
 }

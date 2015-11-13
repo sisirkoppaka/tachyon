@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -32,17 +32,19 @@ import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.base.Preconditions;
+
 /**
  * Masters use this client to elect a leader.
  */
-public class LeaderSelectorClient implements Closeable, LeaderSelectorListener {
+public final class LeaderSelectorClient implements Closeable, LeaderSelectorListener {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
 
-  private final String mZookeeperAddress;
   private final String mElectionPath;
   private final String mLeaderFolder;
-  private final String mName;
   private final LeaderSelector mLeaderSelector;
+  private final String mName;
+  private final String mZookeeperAddress;
 
   private AtomicBoolean mIsLeader = new AtomicBoolean(false);
   private volatile Thread mCurrentMasterThread = null;
@@ -60,12 +62,7 @@ public class LeaderSelectorClient implements Closeable, LeaderSelectorListener {
 
     // Create a leader selector using the given path for management.
     // All participants in a given leader selection must use the same path.
-    // ExampleClient here is also a LeaderSelectorListener but this isn't required.
-    CuratorFramework client =
-        CuratorFrameworkFactory.newClient(mZookeeperAddress, new ExponentialBackoffRetry(
-            Constants.SECOND_MS, 3));
-    client.start();
-    mLeaderSelector = new LeaderSelector(client, mElectionPath, this);
+    mLeaderSelector = new LeaderSelector(getNewCuratorClient(), mElectionPath, this);
     mLeaderSelector.setId(name);
 
     // for most cases you will want your instance to requeue when it relinquishes leadership
@@ -81,7 +78,7 @@ public class LeaderSelectorClient implements Closeable, LeaderSelectorListener {
     try {
       mLeaderSelector.close();
     } catch (IllegalStateException e) {
-      // TODO This should not happen in unit tests.
+      // TODO(hy): This should not happen in unit tests.
       if (!e.getMessage().equals("Already closed or has not been started")) {
         throw e;
       }
@@ -113,11 +110,11 @@ public class LeaderSelectorClient implements Closeable, LeaderSelectorListener {
 
   /**
    * Set the current master thread.
-   * 
-   * @param currentMasterThread
+   *
+   * @param currentMasterThread the thread to use as the master thread
    */
   public void setCurrentMasterThread(Thread currentMasterThread) {
-    mCurrentMasterThread = currentMasterThread;
+    mCurrentMasterThread = Preconditions.checkNotNull(currentMasterThread);
   }
 
   public void start() throws IOException {
@@ -145,8 +142,10 @@ public class LeaderSelectorClient implements Closeable, LeaderSelectorListener {
   public void takeLeadership(CuratorFramework client) throws Exception {
     mIsLeader.set(true);
     if (client.checkExists().forPath(mLeaderFolder + mName) != null) {
+      LOG.info("deleting zk path: " + mLeaderFolder + mName);
       client.delete().forPath(mLeaderFolder + mName);
     }
+    LOG.info("creating zk path: " + mLeaderFolder + mName);
     client.create().creatingParentsIfNeeded().forPath(mLeaderFolder + mName);
     LOG.info(mName + " is now the leader.");
     try {
@@ -157,11 +156,33 @@ public class LeaderSelectorClient implements Closeable, LeaderSelectorListener {
       LOG.error(mName + " was interrupted.", e);
       Thread.currentThread().interrupt();
     } finally {
+      mIsLeader.set(false);
       mCurrentMasterThread = null;
       LOG.warn(mName + " relinquishing leadership.");
+      LOG.info("The current leader is " + mLeaderSelector.getLeader().getId());
+      LOG.info("All participants: " + mLeaderSelector.getParticipants());
+      client.delete().forPath(mLeaderFolder + mName);
     }
-    LOG.info("The current leader is " + mLeaderSelector.getLeader().getId());
-    LOG.info("All partitations: " + mLeaderSelector.getParticipants());
-    client.delete().forPath(mLeaderFolder + mName);
+  }
+
+  /**
+   * Returns a new client for the zookeeper connection. The client is already started before
+   * returning.
+   *
+   * @return a new {@link CuratorFramework} client to use for leader selection
+   */
+  private CuratorFramework getNewCuratorClient() {
+    CuratorFramework client = CuratorFrameworkFactory.newClient(mZookeeperAddress,
+        new ExponentialBackoffRetry(Constants.SECOND_MS, 3));
+    client.start();
+
+    // Sometimes, if the master crashes and restarts too quickly (faster than the zookeeper
+    // timeout), zookeeper thinks the new client is still an old one. In order to ensure a clean
+    // state, explicitly close the "old" client recreate a new one.
+    client.close();
+    client = CuratorFrameworkFactory.newClient(mZookeeperAddress,
+        new ExponentialBackoffRetry(Constants.SECOND_MS, 3));
+    client.start();
+    return client;
   }
 }

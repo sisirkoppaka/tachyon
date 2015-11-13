@@ -37,11 +37,11 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Throwables;
 
-import tachyon.conf.TachyonConf;
 import tachyon.Constants;
 import tachyon.TachyonURI;
+import tachyon.conf.TachyonConf;
 import tachyon.underfs.UnderFileSystem;
-import tachyon.util.NetworkUtils;
+import tachyon.util.network.NetworkAddressUtils;
 
 /**
  * HDFS UnderFilesystem implementation
@@ -52,7 +52,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
 
   private FileSystem mFs = null;
   private String mUfsPrefix = null;
-  // TODO add sticky bit and narrow down the permission in hadoop 2
+  // TODO(hy): Add a sticky bit and narrow down the permission in hadoop 2.
   private static final FsPermission PERMISSION = new FsPermission((short) 0777)
       .applyUMask(FsPermission.createImmutable((short) 0000));
 
@@ -66,16 +66,21 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
       tConf = new Configuration();
     }
     prepareConfiguration(fsDefaultName, tachyonConf, tConf);
-    tConf.addResource(new Path(tConf.get(Constants.UNDERFS_HADOOP_CONFIGURATION)));
+    tConf.addResource(new Path(tConf.get(Constants.UNDERFS_HDFS_CONFIGURATION)));
     HdfsUnderFileSystemUtils.addS3Credentials(tConf);
 
     Path path = new Path(mUfsPrefix);
     try {
       mFs = path.getFileSystem(tConf);
     } catch (IOException e) {
-      LOG.error("Exception thrown when trying to get FileSystem for " + mUfsPrefix, e);
+      LOG.error("Exception thrown when trying to get FileSystem for {}", mUfsPrefix, e);
       throw Throwables.propagate(e);
     }
+  }
+
+  @Override
+  public UnderFSType getUnderFSType() {
+    return UnderFSType.HDFS;
   }
 
   /**
@@ -95,7 +100,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
     // discover available file system implementations. However this configuration setting is
     // required for earlier Hadoop versions plus it is still honoured as an override even in 2.x so
     // if present propagate it to the Hadoop configuration
-    String ufsHdfsImpl = mTachyonConf.get(Constants.UNDERFS_HDFS_IMPL, null);
+    String ufsHdfsImpl = mTachyonConf.get(Constants.UNDERFS_HDFS_IMPL);
     if (!StringUtils.isEmpty(ufsHdfsImpl)) {
       config.set("fs.hdfs.impl", ufsHdfsImpl);
     }
@@ -106,7 +111,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
     config.set("fs.hdfs.impl.disable.cache",
         System.getProperty("fs.hdfs.impl.disable.cache", "false"));
 
-    HdfsUnderFileSystemUtils.addKey(config, tachyonConf, Constants.UNDERFS_HADOOP_CONFIGURATION);
+    HdfsUnderFileSystemUtils.addKey(config, tachyonConf, Constants.UNDERFS_HDFS_CONFIGURATION);
   }
 
   @Override
@@ -124,7 +129,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
         return FileSystem.create(mFs, new Path(path), PERMISSION);
       } catch (IOException e) {
         cnt ++;
-        LOG.error(cnt + " : " + e.getMessage(), e);
+        LOG.error("{} : {}", cnt, e.getMessage(), e);
         te = e;
       }
     }
@@ -136,26 +141,26 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
    */
   @Override
   public FSDataOutputStream create(String path, int blockSizeByte) throws IOException {
-    // TODO Fix this
-    // return create(path, (short) Math.min(3, mFs.getDefaultReplication()), blockSizeByte);
+    // TODO(hy): Fix this.
+    // return create(path, (short) Math.min(3, mFs.getDefaultReplication()), blockSizeBytes);
     return create(path);
   }
 
   @Override
   public FSDataOutputStream create(String path, short replication, int blockSizeByte)
       throws IOException {
-    // TODO Fix this
-    // return create(path, (short) Math.min(3, mFs.getDefaultReplication()), blockSizeByte);
+    // TODO(hy): Fix this.
+    // return create(path, (short) Math.min(3, mFs.getDefaultReplication()), blockSizeBytes);
     return create(path);
-    // LOG.info(path + " " + replication + " " + blockSizeByte);
+    // LOG.info("{} {} {}", path, replication, blockSizeBytes);
     // IOException te = null;
     // int cnt = 0;
     // while (cnt < MAX_TRY) {
     // try {
-    // return mFs.create(new Path(path), true, 4096, replication, blockSizeByte);
+    // return mFs.create(new Path(path), true, 4096, replication, blockSizeBytes);
     // } catch (IOException e) {
     // cnt ++;
-    // LOG.error(cnt + " : " + e.getMessage(), e);
+    // LOG.error("{} : {}", cnt, e.getMessage(), e);
     // te = e;
     // continue;
     // }
@@ -173,7 +178,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
         return mFs.delete(new Path(path), recursive);
       } catch (IOException e) {
         cnt ++;
-        LOG.error(cnt + " : " + e.getMessage(), e);
+        LOG.error("{} : {}", cnt, e.getMessage(), e);
         te = e;
       }
     }
@@ -189,7 +194,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
         return mFs.exists(new Path(path));
       } catch (IOException e) {
         cnt ++;
-        LOG.error(cnt + " try to check if " + path + " exists " + " : " + e.getMessage(), e);
+        LOG.error("{} try to check if {} exists : {}", cnt, path, e.getMessage(), e);
         te = e;
       }
     }
@@ -227,7 +232,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
         Collections.addAll(ret, names);
       }
     } catch (IOException e) {
-      LOG.error("Unable to get file location for " + path, e);
+      LOG.error("Unable to get file location for {}", path, e);
     }
     return ret;
   }
@@ -242,7 +247,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
         return fs.getLen();
       } catch (IOException e) {
         cnt ++;
-        LOG.error(cnt + " try to get file size for " + path + " : " + e.getMessage(), e);
+        LOG.error("{} try to get file size for {} : {}", cnt, path, e.getMessage(), e);
       }
     }
     return -1;
@@ -290,7 +295,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
       int i = 0;
       for (FileStatus status : files) {
         TachyonURI filePathURI = new TachyonURI(status.getPath().toUri().toString());
-        String filePath =  NetworkUtils.replaceHostName(filePathURI).toString();
+        String filePath =  NetworkAddressUtils.replaceHostName(filePathURI).toString();
         // only return the relative path, to keep consistent with java.io.File.list()
         rtn[i ++] = filePath.substring(path.length()); // mUfsPrefix
       }
@@ -302,11 +307,12 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
 
   @Override
   public void connectFromMaster(TachyonConf conf, String host) throws IOException {
-    String masterKeytab = conf.get(Constants.MASTER_KEYTAB_KEY, null);
-    String masterPrincipal = conf.get(Constants.MASTER_PRINCIPAL_KEY, null);
-    if (masterKeytab == null || masterPrincipal == null) {
+    if (!conf.containsKey(Constants.MASTER_KEYTAB_KEY)
+        || !conf.containsKey(Constants.MASTER_PRINCIPAL_KEY)) {
       return;
     }
+    String masterKeytab = conf.get(Constants.MASTER_KEYTAB_KEY);
+    String masterPrincipal = conf.get(Constants.MASTER_PRINCIPAL_KEY);
 
     login(Constants.MASTER_KEYTAB_KEY, masterKeytab, Constants.MASTER_PRINCIPAL_KEY,
         masterPrincipal, host);
@@ -314,11 +320,12 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
 
   @Override
   public void connectFromWorker(TachyonConf conf, String host) throws IOException {
-    String workerKeytab = conf.get(Constants.WORKER_KEYTAB_KEY, null);
-    String workerPrincipal = conf.get(Constants.WORKER_PRINCIPAL_KEY, null);
-    if (workerKeytab == null || workerPrincipal == null) {
+    if (!conf.containsKey(Constants.WORKER_KEYTAB_KEY)
+        || !conf.containsKey(Constants.WORKER_PRINCIPAL_KEY)) {
       return;
     }
+    String workerKeytab = conf.get(Constants.WORKER_KEYTAB_KEY);
+    String workerPrincipal = conf.get(Constants.WORKER_PRINCIPAL_KEY);
 
     login(Constants.WORKER_KEYTAB_KEY, workerKeytab, Constants.WORKER_PRINCIPAL_KEY,
         workerPrincipal, host);
@@ -345,7 +352,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
         return mFs.mkdirs(new Path(path), PERMISSION);
       } catch (IOException e) {
         cnt ++;
-        LOG.error(cnt + " try to make directory for " + path + " : " + e.getMessage(), e);
+        LOG.error("{} try to make directory for {} : {}", cnt, path, e.getMessage(), e);
         te = e;
       }
     }
@@ -361,7 +368,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
         return mFs.open(new Path(path));
       } catch (IOException e) {
         cnt ++;
-        LOG.error(cnt + " try to open " + path + " : " + e.getMessage(), e);
+        LOG.error("{} try to open {} : {}", cnt, path, e.getMessage(), e);
         te = e;
       }
     }
@@ -372,12 +379,12 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
   public boolean rename(String src, String dst) throws IOException {
     LOG.debug("Renaming from {} to {}", src, dst);
     if (!exists(src)) {
-      LOG.error("File " + src + " does not exist. Therefore rename to " + dst + " failed.");
+      LOG.error("File {} does not exist. Therefore rename to {} failed.", src, dst);
       return false;
     }
 
     if (exists(dst)) {
-      LOG.error("File " + dst + " does exist. Therefore rename from " + src + " failed.");
+      LOG.error("File {} does exist. Therefore rename from {} failed.", dst, src);
       return false;
     }
 
@@ -388,7 +395,7 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
         return mFs.rename(new Path(src), new Path(dst));
       } catch (IOException e) {
         cnt ++;
-        LOG.error(cnt + " try to rename " + src + " to " + dst + " : " + e.getMessage(), e);
+        LOG.error("{} try to rename {} to {} : {}", cnt, src, dst, e.getMessage(), e);
         te = e;
       }
     }
@@ -404,12 +411,12 @@ public class HdfsUnderFileSystem extends UnderFileSystem {
   public void setPermission(String path, String posixPerm) throws IOException {
     try {
       FileStatus fileStatus = mFs.getFileStatus(new Path(path));
-      LOG.info("Changing file '" + fileStatus.getPath() + "' permissions from: "
-          + fileStatus.getPermission() + " to " + posixPerm);
+      LOG.info("Changing file '{}' permissions from: {} to {}", fileStatus.getPath(),
+          fileStatus.getPermission(), posixPerm);
       FsPermission perm = new FsPermission(Short.parseShort(posixPerm));
       mFs.setPermission(fileStatus.getPath(), perm);
     } catch (IOException e) {
-      LOG.error("Fail to set permission for " + path + " with perm " + posixPerm, e);
+      LOG.error("Fail to set permission for {} with perm {}", path, posixPerm, e);
       throw e;
     }
   }

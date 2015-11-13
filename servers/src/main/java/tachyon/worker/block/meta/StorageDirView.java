@@ -16,7 +16,9 @@
 package tachyon.worker.block.meta;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import com.google.common.base.Preconditions;
 
@@ -24,10 +26,10 @@ import tachyon.worker.block.BlockMetadataManagerView;
 import tachyon.worker.block.BlockStoreLocation;
 
 /**
- * This class is a wrapper of {@link StorageDir} to provide more limited access
- * and a filtered list of blocks.
+ * This class is a wrapper of {@link StorageDir} to provide more limited access and a filtered list
+ * of blocks.
  */
-public class StorageDirView {
+public final class StorageDirView {
 
   /** the StorageDir this view is derived from */
   private final StorageDir mDir;
@@ -36,13 +38,19 @@ public class StorageDirView {
   /** the BlockMetadataView this view is associated with */
   private final BlockMetadataManagerView mManagerView;
 
+  // The below data structures are used by the evictor to mark blocks to move in/out during
+  // generating an eviction plan.
+  private final Set<Long> mBlocksToMoveIn = new HashSet<Long>();
+  private final Set<Long> mBlocksToMoveOut = new HashSet<Long>();
+  private long mBlocksToMoveInSize = 0L;
+  private long mBlocksToMoveOutSize = 0L;
+
   /**
-   * Create a StorageDirView using the actual StorageDir and the associated BlockMetadataView
+   * Creates a StorageDirView using the actual StorageDir and the associated BlockMetadataView.
    *
    * @param dir which the dirView is constructed from
    * @param tierView which the dirView is under
    * @param managerView which the dirView is associated with
-   * @return StorageDirView constructed
    */
   public StorageDirView(StorageDir dir, StorageTierView tierView,
       BlockMetadataManagerView managerView) {
@@ -52,7 +60,7 @@ public class StorageDirView {
   }
 
   /**
-   * Get the index of this Dir
+   * Gets the index of this Dir.
    *
    * @return index of the dir
    */
@@ -61,8 +69,7 @@ public class StorageDirView {
   }
 
   /**
-   * Get a filtered list of block metadata,
-   * for blocks that are neither pinned or being blocked.
+   * Get a filtered list of block metadata, for blocks that are neither pinned or being blocked.
    *
    * @return a list of metadata for all evictable blocks
    */
@@ -79,7 +86,7 @@ public class StorageDirView {
   }
 
   /**
-   * Get capacity bytes for this dir
+   * Gets capacity bytes for this dir.
    *
    * @return capacity bytes for this dir
    */
@@ -88,17 +95,16 @@ public class StorageDirView {
   }
 
   /**
-   * Get available bytes for this dir
+   * Gets available bytes for this dir.
    *
    * @return available bytes for this dir
    */
   public long getAvailableBytes() {
-    return mDir.getAvailableBytes();
+    return mDir.getAvailableBytes() + mBlocksToMoveOutSize - mBlocksToMoveInSize;
   }
 
   /**
-   * Get committed bytes for this dir.
-   * This includes all blocks, locked, pinned, committed etc.
+   * Gets committed bytes for this dir. This includes all blocks, locked, pinned, committed etc.
    *
    * @return committed bytes for this dir
    */
@@ -107,7 +113,7 @@ public class StorageDirView {
   }
 
   /**
-   * Get evictable bytes for this dir, i.e., the total bytes of total evictable blocks
+   * Gets evictable bytes for this dir, i.e., the total bytes of total evictable blocks
    *
    * @return evictable bytes for this dir
    */
@@ -123,20 +129,27 @@ public class StorageDirView {
   }
 
   /**
-   * Create a TempBlockMeta given userId, blockId, and initialBlockSize.
-   *
-   * @param userId of the owning user
-   * @param blockId of the new block
-   * @param initialBlockSize of the new block
-   * @return a new TempBlockMeta under the underlying directory.
+   * Clears all marks about blocks to move in/out in this view.
    */
-  public TempBlockMeta createTempBlockMeta(long userId, long blockId, long initialBlockSize) {
-    return new TempBlockMeta(userId, blockId, initialBlockSize, mDir);
+  public void clearBlockMarks() {
+    mBlocksToMoveIn.clear();
+    mBlocksToMoveOut.clear();
+    mBlocksToMoveInSize = mBlocksToMoveOutSize = 0L;
   }
 
   /**
-   * Get the parent TierView for this view.
+   * Creates a TempBlockMeta given sessionId, blockId, and initialBlockSize.
    *
+   * @param sessionId of the owning session
+   * @param blockId of the new block
+   * @param initialBlockSize of the new block
+   * @return a new TempBlockMeta under the underlying directory
+   */
+  public TempBlockMeta createTempBlockMeta(long sessionId, long blockId, long initialBlockSize) {
+    return new TempBlockMeta(sessionId, blockId, initialBlockSize, mDir);
+  }
+
+  /**
    * @return parent tierview
    */
   public StorageTierView getParentTierView() {
@@ -144,8 +157,42 @@ public class StorageDirView {
   }
 
   /**
-   * Create a BlockStoraLocation for this directory view.
-   * Redirecting to {@link StorageDir#toBlockStoreLocation}
+   * Returns an indication whether the given block is marked to be moved out.
+   *
+   * @param blockId the block id
+   * @return whether the block is marked to be moved out
+   */
+  public boolean isMarkedToMoveOut(long blockId) {
+    return mBlocksToMoveOut.contains(blockId);
+  }
+
+  /**
+   * Marks a block to move into this dir view, which is used by the evictor.
+   *
+   * @param blockId the Id of the block
+   * @param blockSize the block size
+   */
+  public void markBlockMoveIn(long blockId, long blockSize) {
+    if (mBlocksToMoveIn.add(blockId)) {
+      mBlocksToMoveInSize += blockSize;
+    }
+  }
+
+  /**
+   * Marks a block to move out of this dir view, which is used by the evictor.
+   *
+   * @param blockId the Id of the block
+   * @param blockSize the block size
+   */
+  public void markBlockMoveOut(long blockId, long blockSize) {
+    if (mBlocksToMoveOut.add(blockId)) {
+      mBlocksToMoveOutSize += blockSize;
+    }
+  }
+
+  /**
+   * Creates a BlockStoraLocation for this directory view. Redirecting to
+   * {@link StorageDir#toBlockStoreLocation}
    *
    * @return BlockStoreLocation created
    */

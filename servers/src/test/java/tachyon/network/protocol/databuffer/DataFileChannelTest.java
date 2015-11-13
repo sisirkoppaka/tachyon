@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -31,7 +32,7 @@ import org.junit.rules.TemporaryFolder;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.FileRegion;
 
-import tachyon.TestUtils;
+import tachyon.util.io.BufferUtils;
 
 public class DataFileChannelTest {
   private static final int OFFSET = 1;
@@ -40,6 +41,7 @@ public class DataFileChannelTest {
   @Rule
   public TemporaryFolder mFolder = new TemporaryFolder();
 
+  private FileInputStream mInputStream = null;
   private FileChannel mChannel = null;
 
   @Before
@@ -49,11 +51,16 @@ public class DataFileChannelTest {
     String path = f.getAbsolutePath();
 
     FileOutputStream os = new FileOutputStream(path);
-    os.write(TestUtils.getIncreasingByteArray(OFFSET + LENGTH));
+    os.write(BufferUtils.getIncreasingByteArray(OFFSET + LENGTH));
     os.close();
 
-    FileInputStream is = new FileInputStream(f);
-    mChannel = is.getChannel();
+    mInputStream = new FileInputStream(f);
+    mChannel = mInputStream.getChannel();
+  }
+
+  @After
+  public final void after() throws IOException {
+    mInputStream.close();
   }
 
   @Test
@@ -74,6 +81,6 @@ public class DataFileChannelTest {
     DataFileChannel data = new DataFileChannel(mChannel, OFFSET, LENGTH);
     ByteBuffer readOnlyBuffer = data.getReadOnlyByteBuffer();
     Assert.assertTrue(readOnlyBuffer.isReadOnly());
-    Assert.assertEquals(TestUtils.getIncreasingByteBuffer(OFFSET, LENGTH), readOnlyBuffer);
+    Assert.assertEquals(BufferUtils.getIncreasingByteBuffer(OFFSET, LENGTH), readOnlyBuffer);
   }
 }

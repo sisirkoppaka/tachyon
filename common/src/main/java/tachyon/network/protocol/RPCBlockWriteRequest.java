@@ -27,56 +27,58 @@ import tachyon.network.protocol.databuffer.DataByteBuffer;
 /**
  * This represents the request to write a block to a DataServer.
  */
-public class RPCBlockWriteRequest extends RPCRequest {
-  private final long mUserId;
+public final class RPCBlockWriteRequest extends RPCRequest {
+  private final long mSessionId;
   private final long mBlockId;
   private final long mOffset;
   private final long mLength;
   private final DataBuffer mData;
 
-  public RPCBlockWriteRequest(long userId, long blockId, long offset, long length,
+  public RPCBlockWriteRequest(long sessionId, long blockId, long offset, long length,
       DataBuffer data) {
-    mUserId = userId;
+    mSessionId = sessionId;
     mBlockId = blockId;
     mOffset = offset;
     mLength = length;
     mData = data;
   }
 
+  @Override
   public Type getType() {
     return Type.RPC_BLOCK_WRITE_REQUEST;
   }
 
   /**
-   * Decode the input {@link ByteBuf} into a {@link RPCBlockWriteRequest} object and return it.
+   * Decodes the input {@link ByteBuf} into a {@link RPCBlockWriteRequest} object and returns it.
    *
    * @param in the input {@link ByteBuf}
-   * @return The decoded RPCBlockResponse object
+   * @return The decoded RPCBlockWriteRequest object
    */
   public static RPCBlockWriteRequest decode(ByteBuf in) {
-    long userId = in.readLong();
+    long sessionId = in.readLong();
     long blockId = in.readLong();
     long offset = in.readLong();
     long length = in.readLong();
-    DataBuffer data = null;
-    if (length > 0) {
-      // TODO: look into accessing Netty ByteBuf directly, to avoid copying the data.
-      ByteBuffer buffer = ByteBuffer.allocate((int) length);
-      in.readBytes(buffer);
-      data = new DataByteBuffer(buffer, (int) length);
-    }
-    return new RPCBlockWriteRequest(userId, blockId, offset, length, data);
+    // TODO(gene): Look into accessing Netty ByteBuf directly, to avoid copying the data.
+    // Length will always be greater than 0 if the request is not corrupted. If length is negative,
+    // ByteBuffer.allocate will fail. If length is 0 this will become a no-op but still go through
+    // the necessary calls to validate the sessionId/blockId. If length is positive, the request
+    // will proceed as normal
+    ByteBuffer buffer = ByteBuffer.allocate((int) length);
+    in.readBytes(buffer);
+    DataByteBuffer data = new DataByteBuffer(buffer, (int) length);
+    return new RPCBlockWriteRequest(sessionId, blockId, offset, length, data);
   }
 
   @Override
   public int getEncodedLength() {
-    // 4 longs (mUserId, mBlockId, mOffset, mLength)
+    // 4 longs (mSessionId, mBlockId, mOffset, mLength)
     return Longs.BYTES * 4;
   }
 
   @Override
   public void encode(ByteBuf out) {
-    out.writeLong(mUserId);
+    out.writeLong(mSessionId);
     out.writeLong(mBlockId);
     out.writeLong(mOffset);
     out.writeLong(mLength);
@@ -89,8 +91,8 @@ public class RPCBlockWriteRequest extends RPCRequest {
     return mData;
   }
 
-  public long getUserId() {
-    return mUserId;
+  public long getSessionId() {
+    return mSessionId;
   }
 
   public long getBlockId() {

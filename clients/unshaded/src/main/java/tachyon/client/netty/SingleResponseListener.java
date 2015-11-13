@@ -19,19 +19,14 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.google.common.util.concurrent.SettableFuture;
 
-import tachyon.Constants;
 import tachyon.network.protocol.RPCResponse;
 
 /**
  * A simple listener that waits for a single {@link RPCResponse} message from the remote server.
  */
 public final class SingleResponseListener implements ClientHandler.ResponseListener {
-  private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
 
   private SettableFuture<RPCResponse> mResponse = SettableFuture.create();
 
@@ -43,9 +38,9 @@ public final class SingleResponseListener implements ClientHandler.ResponseListe
   /**
    * Waits to receive the response and returns the response message.
    *
-   * @return The {@link RPCResponse} received from the remote server.
-   * @throws ExecutionException
-   * @throws InterruptedException
+   * @return The {@link RPCResponse} received from the remote server
+   * @throws ExecutionException if the computation threw an exception
+   * @throws InterruptedException if the current thread was interrupted while waiting
    */
   public RPCResponse get() throws ExecutionException, InterruptedException {
     return mResponse.get();
@@ -54,12 +49,12 @@ public final class SingleResponseListener implements ClientHandler.ResponseListe
   /**
    * Waits to receive the response for at most a specified time, and returns the response message.
    *
-   * @param timeout the maximum amount of time to wait.
-   * @param unit the {@link TimeUnit} of the timeout parameter.
-   * @return The {@link RPCResponse} received from the remote server.
-   * @throws InterruptedException
-   * @throws ExecutionException
-   * @throws TimeoutException
+   * @param timeout the maximum amount of time to wait
+   * @param unit the {@link TimeUnit} of the timeout parameter
+   * @return The {@link RPCResponse} received from the remote server
+   * @throws ExecutionException if the computation threw an exception
+   * @throws InterruptedException if the current thread was interrupted while waiting
+   * @throws TimeoutException if the wait timed out
    */
   public RPCResponse get(long timeout, TimeUnit unit)
       throws InterruptedException, ExecutionException, TimeoutException {

@@ -33,6 +33,7 @@
             <th>Size</th>
             <th>Block Size</th>
             <th>In-Memory</th>
+            <th>Persisted</th>
             <th>Pin</th>
             <th>Creation Time</th>
             <th>Modification Time</th>
@@ -73,11 +74,6 @@
                   </c:if>
                 </th>
                 <th>${fileInfo.creationTime}</th>
-                <th>
-                  <c:if test = "${fileInfo.dependencyId} != -1">
-                    <a href="./dependency?id=${fileInfo.dependencyId}&filePath=${fileInfo.absolutePath}"><c:out value="${fileInfo.dependencyId}"/></a>
-                  </c:if>
-                </th>
                 <c:if test = "${debug}">
                   <th>${fileInfo.id}</th>
                   <th>${fileInfo.checkpointPath}</th>
@@ -117,17 +113,12 @@
                       <%= fileInfo.getInMemoryPercentage() %>%
                     <% } %>
                   </th>
+                  <th><%= (fileInfo.getPersisted() ? "YES" : "NO") %></th>
                   <th><%= (fileInfo.getNeedPin() ? "YES" : "NO") %></th>
                   <th><%= fileInfo.getCreationTime() %></th>
                   <th><%= fileInfo.getModificationTime() %></th>
                   <% if ((Boolean) request.getAttribute("debug")) { %>
-                    <th>
-                      <% if (fileInfo.getDependencyId() != -1) { %>
-                        <a href="./dependency?id=<%=fileInfo.getDependencyId()%>&filePath=<%=fileInfo.getAbsolutePath()%>"><%= fileInfo.getDependencyId() %></a>
-                      <% } %>
-                    </th>
                     <th><%= fileInfo.getId() %></th>
-                    <th><%= fileInfo.getCheckpointPath() %></th>
                     <th><% for (String location : fileInfo.getFileLocations()) { %>
                           <%= location %> <br/>
                         <% } %>

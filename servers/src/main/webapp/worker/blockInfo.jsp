@@ -1,4 +1,3 @@
-<%@ page import="tachyon.StorageLevelAlias" %>
 <%@ page import="java.util.*" %>
 <%@ page import="tachyon.web.*" %>
 <%@ page import="static java.net.URLEncoder.encode" %>
@@ -25,8 +24,8 @@
           <table class="table table-hover">
           <thead>
             <th>File Path</th>
-            <% for (int i = 0; i < StorageLevelAlias.SIZE; i ++) { %>
-            <th>In-<%= StorageLevelAlias.values()[i].name() %></th>
+            <% for (String tierAlias : (List<String>) request.getAttribute("orderedTierAliases")) { %>
+            <th>In-<%= tierAlias %></th>
             <% } %>
             <th>Size</th>
             <th>Creation Time</th>
@@ -36,9 +35,10 @@
             <% if (request.getAttribute("fileInfos") != null) { %>
               <% for (UiFileInfo fileInfo : ((List<UiFileInfo>) request.getAttribute("fileInfos"))) { %>
                 <tr>
-                  <th><a href="<%= (request.getAttribute("baseUrl") == null) ? "./blockInfo" : request.getAttribute("baseUrl").toString() %>?path=<%=encode(fileInfo.getAbsolutePath(), "UTF-8")%>"><%= fileInfo.getAbsolutePath() %></a></th>
-                  <% for (int i = 0; i < StorageLevelAlias.SIZE; i ++) { %>
-                  <th><%= fileInfo.getOnTierPercentage(StorageLevelAlias.values()[i]) %>%</th>
+                  <th><a href="<%= (request.getAttribute("baseUrl") == null) ? "./blockInfo" :
+                  request.getAttribute("baseUrl").toString() %>?path=<%=encode(fileInfo.getAbsolutePath(), "UTF-8")%>"><%= fileInfo.getAbsolutePath() %></a></th>
+                  <% for (String tierAlias : (List<String>) request.getAttribute("orderedTierAliases")) { %>
+                  <th><%= fileInfo.getOnTierPercentage(tierAlias) %>%</th>
                   <% } %>
                   <th><%= fileInfo.getSize() %></th>
                   <th><%= fileInfo.getCreationTime() %></th>

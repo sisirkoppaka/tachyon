@@ -13,7 +13,9 @@ Provider = @cmd['Provider']
 
 validate_provider(Provider)
 
-# load version configuration from tachyon_version.yml
+# load version configuration
+ZookeeperV = ZookeeperVersion.new('conf/zookeeper.yml')
+MesosV = MesosVersion.new('conf/mesos.yml')
 TachyonV = TachyonVersion.new('conf/tachyon.yml')
 SparkV = SparkVersion.new('conf/spark.yml')
 UfsV = UfsVersion.new('conf/ufs.yml')
@@ -26,28 +28,49 @@ Vagrant.require_version ">= 1.6.5"
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   (1..Total).each do |i|
     # multi vm config
-    if i == Total
-      name = "TachyonMaster"
+    if i <= TachyonV.masters
+      if i == 1
+        name = "TachyonMaster"
+      else
+        name = "TachyonMaster#{i}"
+      end
     else
-      name = "TachyonWorker#{i}"
+      name = "TachyonWorker#{i - TachyonV.masters}"
     end
     config.vm.define "#{name}" do |n|
       n.vm.hostname = "#{name}"
 
-      # Provision when the machine is master
+      # Start parallel provision when it is the last machine
       if i == Total
         n.vm.provision :ansible do |ans|
           ans.playbook = "provision/playbook.yml"
           ans.limit = "all" # to let "- hosts: all" work in playbooks
+          mesos_repo, mesos_version = MesosV.repo_version
           tachyon_repo, tachyon_version = TachyonV.repo_version
           spark_repo, spark_version = SparkV.repo_version
           is_vb = Provider == "vb"
+          tachyon_dist = UfsV.tachyon_dist(tachyon_version)
+          puts "using tachyon distribution #{tachyon_dist}"
+          tachyon_platform = "standalone"
+          if MesosV.type != "None"
+            tachyon_platform = "mesos"
+          end
           ans.extra_vars = {
+              zookeeper_type: ZookeeperV.type,
+              zookeeper_version: ZookeeperV.version,
+
+              mesos_type: MesosV.type,
+              mesos_repo: mesos_repo,
+              mesos_dist: MesosV.dist,
+              mesos_version: mesos_version,
+
               tachyon_type:    TachyonV.type,
-              tachyon_repo:    tachyon_repo, 
-              tachyon_dist:    TachyonV.dist,
+              tachyon_repo:    tachyon_repo,
+              tachyon_dist:    tachyon_dist,
               tachyon_memory:  TachyonV.memory,
               tachyon_version: tachyon_version,
+              tachyon_masters: TachyonV.masters,
+              tachyon_platform: tachyon_platform,
 
               spark_type:    SparkV.type,
               spark_repo:    spark_repo,
@@ -74,7 +97,6 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
       # Provider specific init
       if Provider == "vb"
-        system "bash vbox/buildbox.sh"
         config_vb(n, i, Total, name, TachyonV.type == "Local")
       end
 
@@ -95,6 +117,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
           AVAILABILITY_ZONE  = @ec2['Availability_Zone']
           BLOCK_DEVICE_MAPPING = @ec2['Block_Device_Mapping']
           TAG = @ec2['Tag']
+          SUBNET = @ec2['Subnet']
         end
         config_aws(n, i, Total, name)
       end

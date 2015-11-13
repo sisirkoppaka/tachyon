@@ -15,7 +15,6 @@
 
 package tachyon.worker.block.meta;
 
-import java.io.IOException;
 import java.util.List;
 
 import org.junit.Assert;
@@ -25,23 +24,24 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
 
-import tachyon.Constants;
-import tachyon.StorageLevelAlias;
-import tachyon.conf.TachyonConf;
+import tachyon.worker.block.TieredBlockStoreTestUtils;
 
 public class StorageTierTest {
-  private static final long TEST_USER_ID = 2;
+  private static final long TEST_SESSION_ID = 2;
   private static final long TEST_TEMP_BLOCK_ID = 10;
   private static final long TEST_BLOCK_SIZE = 20;
   private static final long TEST_DIR1_CAPACITY = 2000;
   private static final long TEST_DIR2_CAPACITY = 3000;
-  private static final int TEST_TIER_LEVEL = 0;
-  private static final int TEST_TIER_ALIAS = StorageLevelAlias.MEM.getValue();
-  private String mTestDirPath1;
-  private String mTestDirPath2;
+  private static final int TEST_TIER_ORDINAL = 0;
+  private static final String TEST_TIER_ALIAS = "MEM";
+
+  private static final long[] TIER_CAPACITY_BYTES = {TEST_DIR1_CAPACITY, TEST_DIR2_CAPACITY};
+
   private StorageTier mTier;
   private StorageDir mDir1;
   private TempBlockMeta mTempBlockMeta;
+  private String mTestDirPath1;
+  private String mTestDirPath2;
 
   @Rule
   public TemporaryFolder mFolder = new TemporaryFolder();
@@ -53,22 +53,14 @@ public class StorageTierTest {
   public final void before() throws Exception {
     mTestDirPath1 = mFolder.newFolder().getAbsolutePath();
     mTestDirPath2 = mFolder.newFolder().getAbsolutePath();
+    String[] tierPath = {mTestDirPath1, mTestDirPath2};
 
-    TachyonConf tachyonConf = new TachyonConf();
-    tachyonConf.set(Constants.WORKER_DATA_FOLDER, "");
-    tachyonConf.set(
-        String.format(Constants.WORKER_TIERED_STORAGE_LEVEL_ALIAS_FORMAT, TEST_TIER_LEVEL), "MEM");
-    tachyonConf.set(
-        String.format(Constants.WORKER_TIERED_STORAGE_LEVEL_DIRS_PATH_FORMAT, TEST_TIER_LEVEL),
-        mTestDirPath1 + "," + mTestDirPath2);
-    tachyonConf.set(
-        String.format(Constants.WORKER_TIERED_STORAGE_LEVEL_DIRS_QUOTA_FORMAT, TEST_TIER_LEVEL),
-        TEST_DIR1_CAPACITY + "," + TEST_DIR2_CAPACITY);
+    TieredBlockStoreTestUtils.setupTachyonConfWithSingleTier(null, TEST_TIER_ORDINAL,
+        TEST_TIER_ALIAS, tierPath, TIER_CAPACITY_BYTES, "");
 
-    mTier = StorageTier.newStorageTier(tachyonConf, TEST_TIER_LEVEL);
+    mTier = StorageTier.newStorageTier("MEM");
     mDir1 = mTier.getDir(0);
-    mTempBlockMeta = new TempBlockMeta(TEST_USER_ID, TEST_TEMP_BLOCK_ID, TEST_BLOCK_SIZE, mDir1);
-
+    mTempBlockMeta = new TempBlockMeta(TEST_SESSION_ID, TEST_TEMP_BLOCK_ID, TEST_BLOCK_SIZE, mDir1);
   }
 
   @Test
@@ -78,11 +70,11 @@ public class StorageTierTest {
 
   @Test
   public void getTierLevelTest() {
-    Assert.assertEquals(TEST_TIER_LEVEL, mTier.getTierLevel());
+    Assert.assertEquals(TEST_TIER_ORDINAL, mTier.getTierOrdinal());
   }
 
   @Test
-  public void getCapacityBytesTest() throws IOException {
+  public void getCapacityBytesTest() throws Exception {
     Assert.assertEquals(TEST_DIR1_CAPACITY + TEST_DIR2_CAPACITY, mTier.getCapacityBytes());
 
     // Capacity should not change after adding block to a dir.
@@ -91,7 +83,7 @@ public class StorageTierTest {
   }
 
   @Test
-  public void getAvailableBytesTest() throws IOException {
+  public void getAvailableBytesTest() throws Exception {
     Assert.assertEquals(TEST_DIR1_CAPACITY + TEST_DIR2_CAPACITY, mTier.getAvailableBytes());
 
     // Capacity should subtract block size after adding block to a dir.

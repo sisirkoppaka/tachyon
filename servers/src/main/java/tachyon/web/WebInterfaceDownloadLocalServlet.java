@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -36,7 +36,7 @@ import tachyon.conf.TachyonConf;
 /**
  * Servlet for downloading a local file
  */
-public class WebInterfaceDownloadLocalServlet extends HttpServlet {
+public final class WebInterfaceDownloadLocalServlet extends HttpServlet {
   private static final long serialVersionUID = 7260819317567193560L;
 
   private final transient TachyonConf mTachyonConf;
@@ -47,7 +47,7 @@ public class WebInterfaceDownloadLocalServlet extends HttpServlet {
 
   /**
    * Prepares for downloading a file
-   * 
+   *
    * @param request The HttpServletRequest object
    * @param response The HttpServletResponse object
    * @throws ServletException
@@ -62,7 +62,7 @@ public class WebInterfaceDownloadLocalServlet extends HttpServlet {
     }
 
     // Download a file from the local filesystem.
-    String baseDir = mTachyonConf.get(Constants.TACHYON_HOME, Constants.DEFAULT_HOME);
+    String baseDir = mTachyonConf.get(Constants.TACHYON_HOME);
     File logsDir = new File(baseDir, "logs");
 
     // Only allow filenames as the path, to avoid downloading arbitrary local files.
@@ -91,7 +91,6 @@ public class WebInterfaceDownloadLocalServlet extends HttpServlet {
   private void downloadLogFile(File file, HttpServletRequest request,
                                HttpServletResponse response) throws IOException {
     long len = file.length();
-    InputStream is = new FileInputStream(file);
     String fileName = file.getName();
     response.setContentType("application/octet-stream");
     if (len <= Integer.MAX_VALUE) {
@@ -101,18 +100,20 @@ public class WebInterfaceDownloadLocalServlet extends HttpServlet {
     }
     response.addHeader("Content-Disposition", "attachment;filename=" + fileName);
 
-    ServletOutputStream out = null;
+    InputStream is = new FileInputStream(file);
     try {
-      out = response.getOutputStream();
-      ByteStreams.copy(is, out);
+      ServletOutputStream out = response.getOutputStream();
+      try {
+        ByteStreams.copy(is, out);
+      } finally {
+        try {
+          out.flush();
+        } finally {
+          out.close();
+        }
+      }
     } finally {
-      if (out != null) {
-        out.flush();
-        out.close();
-      }
-      if (is != null) {
-        is.close();
-      }
+      is.close();
     }
   }
 }

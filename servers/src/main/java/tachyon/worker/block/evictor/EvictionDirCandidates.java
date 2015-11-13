@@ -20,7 +20,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import tachyon.Pair;
+import tachyon.collections.Pair;
 import tachyon.worker.block.meta.StorageDirView;
 
 /**
@@ -31,8 +31,7 @@ import tachyon.worker.block.meta.StorageDirView;
  * total bytes of added blocks. Assume meta data of StorageDir will not be changed during adding
  * blocks.
  *
- * Example usage can be found in
- * {@link LRUEvictor#freeSpace(long, tachyon.worker.block.BlockStoreLocation)}.
+ * Example usage can be found in {@link LRUEvictor#freeSpaceWithView}.
  */
 class EvictionDirCandidates {
   /** Map from StorageDirView to pair of list of candidate blockIds and their total size in bytes */
@@ -43,7 +42,7 @@ class EvictionDirCandidates {
   private StorageDirView mDirWithMaxBytes = null;
 
   /**
-   * Add the block in the directory to this collection
+   * Adds the block in the directory to this collection.
    *
    * @param dir the dir where the block resides
    * @param blockId blockId of the block
@@ -70,9 +69,9 @@ class EvictionDirCandidates {
   }
 
   /**
-   * The maximum sum of available bytes and total bytes of added blocks in a directory
+   * The maximum sum of available bytes and total bytes of added blocks in a directory.
    *
-   * @return maximum bytes, if no directory has been added, return 0.
+   * @return maximum bytes, if no directory has been added, return 0
    */
   public long candidateSize() {
     return mMaxBytes;

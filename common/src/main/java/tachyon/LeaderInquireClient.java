@@ -26,11 +26,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import tachyon.util.CommonUtils;
+import tachyon.util.io.PathUtils;
 
 /**
  * Utility to get leader from zookeeper.
  */
-public class LeaderInquireClient {
+public final class LeaderInquireClient {
   private static final int MAX_TRY = 10;
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
 
@@ -76,12 +77,13 @@ public class LeaderInquireClient {
             String leader = "";
             for (String master : masters) {
               Stat stat = mCLient.checkExists().forPath(
-                  CommonUtils.concatPath(mLeaderPath, master));
+                  PathUtils.concatPath(mLeaderPath, master));
               if (stat != null && stat.getCtime() > maxTime) {
                 maxTime = stat.getCtime();
                 leader = master;
               }
             }
+            LOG.info("The leader master: " + leader);
             return leader;
           }
         } else {

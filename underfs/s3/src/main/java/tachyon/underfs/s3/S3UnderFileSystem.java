@@ -20,10 +20,13 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.jets3t.service.Jets3tProperties;
 import org.jets3t.service.S3Service;
 import org.jets3t.service.ServiceException;
 import org.jets3t.service.impl.rest.httpclient.RestS3Service;
@@ -34,10 +37,12 @@ import org.jets3t.service.utils.Mimetypes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.base.Preconditions;
+
 import tachyon.Constants;
 import tachyon.conf.TachyonConf;
 import tachyon.underfs.UnderFileSystem;
-import tachyon.util.CommonUtils;
+import tachyon.util.io.PathUtils;
 
 /**
  * Under file system implementation for S3 using the Jets3t library.
@@ -57,14 +62,45 @@ public class S3UnderFileSystem extends UnderFileSystem {
   /** Prefix of the bucket, for example s3n://my-bucket-name/ */
   private final String mBucketPrefix;
 
+  private static final byte[] DIR_HASH;
+
+  static {
+    try {
+      DIR_HASH = MessageDigest.getInstance("MD5").digest(new byte[0]);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
   public S3UnderFileSystem(String bucketName, TachyonConf tachyonConf) throws ServiceException {
     super(tachyonConf);
+    Preconditions.checkArgument(tachyonConf.containsKey(Constants.S3_ACCESS_KEY),
+        "Property " + Constants.S3_ACCESS_KEY + " is required to connect to S3");
+    Preconditions.checkArgument(tachyonConf.containsKey(Constants.S3_SECRET_KEY),
+        "Property " + Constants.S3_SECRET_KEY + " is required to connect to S3");
     AWSCredentials awsCredentials =
-        new AWSCredentials(tachyonConf.get(Constants.S3_ACCESS_KEY, null), tachyonConf.get(
-            Constants.S3_SECRET_KEY, null));
+        new AWSCredentials(tachyonConf.get(Constants.S3_ACCESS_KEY), tachyonConf.get(
+            Constants.S3_SECRET_KEY));
     mBucketName = bucketName;
-    mClient = new RestS3Service(awsCredentials);
+
+    Jets3tProperties props = new Jets3tProperties();
+    if (tachyonConf.containsKey(Constants.UNDERFS_S3_PROXY_HOST)) {
+      props.setProperty("httpclient.proxy-autodetect", "false");
+      props.setProperty("httpclient.proxy-host", tachyonConf.get(Constants.UNDERFS_S3_PROXY_HOST));
+      props.setProperty("httpclient.proxy-port", tachyonConf.get(Constants.UNDERFS_S3_PROXY_PORT));
+    }
+    if (tachyonConf.containsKey(Constants.UNDERFS_S3_PROXY_HTTPS_ONLY)) {
+      props.setProperty("s3service.https-only",
+          Boolean.toString(tachyonConf.getBoolean(Constants.UNDERFS_S3_PROXY_HTTPS_ONLY)));
+    }
+    LOG.debug("Initializing S3 underFs with properties: {}", props.getProperties());
+    mClient = new RestS3Service(awsCredentials, null, null, props);
     mBucketPrefix = Constants.HEADER_S3N + mBucketName + PATH_SEPARATOR;
+  }
+
+  @Override
+  public UnderFSType getUnderFSType() {
+    return UnderFSType.S3;
   }
 
   @Override
@@ -120,8 +156,8 @@ public class S3UnderFileSystem extends UnderFileSystem {
     String[] pathsToDelete = listInternal(path, true);
     for (String pathToDelete : pathsToDelete) {
       // If we fail to deleteInternal one file, stop
-      if (!deleteInternal(CommonUtils.concatPath(path, pathToDelete))) {
-        LOG.error("Failed to delete path " + pathToDelete + ", aborting delete.");
+      if (!deleteInternal(PathUtils.concatPath(path, pathToDelete))) {
+        LOG.error("Failed to delete path {}, aborting delete.", pathToDelete);
         return false;
       }
     }
@@ -214,7 +250,7 @@ public class S3UnderFileSystem extends UnderFileSystem {
       return true;
     }
     if (exists(path)) {
-      LOG.error("Cannot create directory " + path + " because it is already a file.");
+      LOG.error("Cannot create directory {} because it is already a file.", path);
       return false;
     }
     if (!createParent) {
@@ -222,7 +258,7 @@ public class S3UnderFileSystem extends UnderFileSystem {
         // Parent directory exists
         return mkdirsInternal(path);
       } else {
-        LOG.error("Cannot create directory " + path + " because parent does not exist");
+        LOG.error("Cannot create directory {} because parent does not exist", path);
         return false;
       }
     }
@@ -243,7 +279,7 @@ public class S3UnderFileSystem extends UnderFileSystem {
       path = stripPrefixIfPresent(path);
       return new S3InputStream(mBucketName, path, mClient);
     } catch (ServiceException se) {
-      LOG.error("Failed to open file: " + path, se);
+      LOG.error("Failed to open file: {}", path, se);
       return null;
     }
   }
@@ -251,11 +287,11 @@ public class S3UnderFileSystem extends UnderFileSystem {
   @Override
   public boolean rename(String src, String dst) throws IOException {
     if (!exists(src)) {
-      LOG.error("Unable to rename " + src + " to " + dst + " because source does not exist.");
+      LOG.error("Unable to rename {} to {} because source does not exist.", src, dst);
       return false;
     }
     if (exists(dst)) {
-      LOG.error("Unable to rename " + src + " to " + dst + " because destination already exists.");
+      LOG.error("Unable to rename {} to {} because destination already exists.", src, dst);
       return false;
     }
     // Source exists and destination does not exist
@@ -267,7 +303,7 @@ public class S3UnderFileSystem extends UnderFileSystem {
       // Rename each child in the src folder to destination/child
       String [] children = list(src);
       for (String child: children) {
-        if (!rename(CommonUtils.concatPath(src, child), CommonUtils.concatPath(dst, child))) {
+        if (!rename(PathUtils.concatPath(src, child), PathUtils.concatPath(dst, child))) {
           return false;
         }
       }
@@ -297,20 +333,20 @@ public class S3UnderFileSystem extends UnderFileSystem {
 
   /**
    * Copies an object to another key.
-   * @param src the source key to copy.
-   * @param dst the destination key to copy to.
+   * @param src the source key to copy
+   * @param dst the destination key to copy to
    * @return true if the operation was successful, false otherwise
    */
   private boolean copy(String src, String dst) {
     try {
       src = stripPrefixIfPresent(src);
       dst = stripPrefixIfPresent(dst);
-      LOG.info("Copying " + src + " to " + dst);
+      LOG.info("Copying {} to {}", src, dst);
       S3Object obj = new S3Object(dst);
       mClient.copyObject(mBucketName, src, mBucketName, obj, false);
       return true;
     } catch (ServiceException se) {
-      LOG.error("Failed to rename file " + src + " to " + dst);
+      LOG.error("Failed to rename file {} to {}", src, dst);
       return false;
     }
   }
@@ -329,7 +365,7 @@ public class S3UnderFileSystem extends UnderFileSystem {
         mClient.deleteObject(mBucketName, stripPrefixIfPresent(key));
       }
     } catch (ServiceException se) {
-      LOG.error("Failed to delete " + key, se);
+      LOG.error("Failed to delete {}", key, se);
       return false;
     }
     return true;
@@ -345,8 +381,8 @@ public class S3UnderFileSystem extends UnderFileSystem {
     if (child.startsWith(parent)) {
       return child.substring(parent.length());
     }
-    LOG.error("Attempted to get childname with an invalid parent argument. Parent: " + parent
-        + " Child: " + child);
+    LOG.error("Attempted to get childname with an invalid parent argument. Parent: {} Child: {}",
+        parent, child);
     return null;
   }
 
@@ -354,7 +390,7 @@ public class S3UnderFileSystem extends UnderFileSystem {
    * Gets the StorageObject representing the metadata of a key. If the key does not exist as a
    * file or folder, null is returned
    * @param key the key to get the object details of
-   * @return StorageObject of the key, or null if the key does not exist as a file or folder.
+   * @return StorageObject of the key, or null if the key does not exist as a file or folder
    */
   private StorageObject getObjectDetails(String key) {
     try {
@@ -460,7 +496,7 @@ public class S3UnderFileSystem extends UnderFileSystem {
       }
       return children.toArray(new String[children.size()]);
     } catch (ServiceException se) {
-      LOG.error("Failed to list path " + path);
+      LOG.error("Failed to list path {}", path);
       return null;
     }
   }
@@ -476,11 +512,12 @@ public class S3UnderFileSystem extends UnderFileSystem {
       S3Object obj = new S3Object(keyAsFolder);
       obj.setDataInputStream(new ByteArrayInputStream(new byte[0]));
       obj.setContentLength(0);
+      obj.setMd5Hash(DIR_HASH);
       obj.setContentType(Mimetypes.MIMETYPE_BINARY_OCTET_STREAM);
       mClient.putObject(mBucketName, obj);
       return true;
     } catch (ServiceException se) {
-      LOG.error("Failed to create directory: " + key, se);
+      LOG.error("Failed to create directory: {}", key, se);
       return false;
     }
   }
@@ -514,9 +551,10 @@ public class S3UnderFileSystem extends UnderFileSystem {
   }
 
   /**
-   * Strips the s3 bucket prefix from the key if it is present. For example, for input key
-   * s3n://my-bucket-name/my-path/file, the output would be my-path/file. This method will leave
-   * keys without a prefix unaltered, ie. my-path/file returns my-path/file.
+   * Strips the s3 bucket prefix or the preceding path separator from the key if it is present.
+   * For example, for input key s3n://my-bucket-name/my-path/file, the output would be my-path/file.
+   * If key is an absolute path like /my-path/file, the output would be my-path/file.
+   * This method will leave keys without a prefix unaltered, ie. my-path/file returns my-path/file.
    * @param key the key to strip
    * @return the key without the s3 bucket prefix
    */
@@ -524,7 +562,9 @@ public class S3UnderFileSystem extends UnderFileSystem {
     if (key.startsWith(mBucketPrefix)) {
       return key.substring(mBucketPrefix.length());
     }
-    LOG.warn("Attempted to strip key with invalid prefix: " + key);
+    if (key.startsWith(PATH_SEPARATOR)) {
+      return key.substring(PATH_SEPARATOR.length());
+    }
     return key;
   }
 }

@@ -25,11 +25,10 @@ import org.junit.Test;
 
 import tachyon.Constants;
 import tachyon.TachyonURI;
-import tachyon.client.TachyonFile;
 import tachyon.client.TachyonFS;
+import tachyon.client.TachyonFile;
 import tachyon.conf.TachyonConf;
 import tachyon.master.LocalTachyonCluster;
-import tachyon.master.MasterInfo;
 
 /**
  * Integration tests for tachyon.client.RawColumn.
@@ -37,6 +36,13 @@ import tachyon.master.MasterInfo;
 public class RawColumnIntegrationTest {
   private LocalTachyonCluster mLocalTachyonCluster = null;
   private TachyonFS mTfs = null;
+
+  @Before
+  public final void before() throws Exception {
+    mLocalTachyonCluster = new LocalTachyonCluster(10000, 1000, Constants.GB);
+    mLocalTachyonCluster.start();
+    mTfs = mLocalTachyonCluster.getOldClient();
+  }
 
   @After
   public final void after() throws Exception {
@@ -46,9 +52,9 @@ public class RawColumnIntegrationTest {
   @Test
   public void basicTest() throws IOException, TException {
     TachyonConf conf = mLocalTachyonCluster.getMasterTachyonConf();
-    int maxCols = conf.getInt(Constants.MAX_COLUMNS, 1000);
+    int maxCols = conf.getInt(Constants.MAX_COLUMNS);
 
-    int fileId = mTfs.createRawTable(new TachyonURI("/table"), maxCols / 10);
+    long fileId = mTfs.createRawTable(new TachyonURI("/table"), maxCols / 10);
     RawTable table = mTfs.getRawTable(fileId);
 
     for (int col = 0; col < maxCols / 10; col ++) {
@@ -61,12 +67,5 @@ public class RawColumnIntegrationTest {
       }
       Assert.assertEquals(5, column.partitions());
     }
-  }
-
-  @Before
-  public final void before() throws IOException {
-    mLocalTachyonCluster = new LocalTachyonCluster(10000, 1000, Constants.GB);
-    mLocalTachyonCluster.start();
-    mTfs = mLocalTachyonCluster.getClient();
   }
 }

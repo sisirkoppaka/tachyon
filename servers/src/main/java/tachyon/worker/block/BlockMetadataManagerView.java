@@ -15,27 +15,32 @@
 
 package tachyon.worker.block;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.HashSet;
 
 import com.google.common.base.Preconditions;
 
-import tachyon.master.BlockInfo;
+import tachyon.exception.BlockDoesNotExistException;
+import tachyon.exception.ExceptionMessage;
+import tachyon.master.block.BlockId;
 import tachyon.worker.block.meta.BlockMeta;
+import tachyon.worker.block.meta.StorageDirView;
 import tachyon.worker.block.meta.StorageTier;
 import tachyon.worker.block.meta.StorageTierView;
 
 /**
  * This class exposes a narrower view of {@link BlockMetadataManager} to Evictors and Allocators,
- * filtering out un-evictable blocks and un-allocatable space (TODO) internally, so that
- * evictors and allocators can be developed with much simpler logic, without worrying about
- * various constraints, e.g. pinned files, locked blocks, etc.
+ * filtering out un-evictable blocks and un-allocatable space internally, so that evictors and
+ * allocators can be developed with much simpler logic, without worrying about various constraints,
+ * e.g. pinned files, locked blocks, etc.
+ *
+ * TODO(cc): Filter un-allocatable space.
  */
 public class BlockMetadataManagerView {
 
@@ -44,23 +49,21 @@ public class BlockMetadataManagerView {
   /** A list of StorageTierView, derived from StorageTiers from the BlockMetadataManager */
   private List<StorageTierView> mTierViews = new ArrayList<StorageTierView>();
   /** A list of pinned inodes */
-  private final Set<Integer> mPinnedInodes = new HashSet<Integer>();
+  private final Set<Long> mPinnedInodes = new HashSet<Long>();
   /** Indices of locks that are being used */
   private final BitSet mInUseLocks = new BitSet();
   /** A map from tier alias to StorageTierView */
-  private Map<Integer, StorageTierView> mAliasToTierViews = new HashMap<Integer, StorageTierView>();
+  private Map<String, StorageTierView> mAliasToTierViews = new HashMap<String, StorageTierView>();
 
   /**
-   * Constructor of BlockMatadataManagerView.
-   * Now we always creating a new view before freespace.
-   * TODO: incrementally update the view
+   * Constructor of BlockMatadataManagerView. Now we always creating a new view before freespace.
+   * TODO(qifan): Incrementally update the view.
    *
    * @param manager which the view should be constructed from
-   * @param pinnedInodes, a set of pinned nodes
-   * @param lockedBlocks, a set of locked blocks
-   * @return BlockMetadataManagerView constructed
+   * @param pinnedInodes a set of pinned inodes
+   * @param lockedBlocks a set of locked blocks
    */
-  public BlockMetadataManagerView(BlockMetadataManager manager, Set<Integer> pinnedInodes,
+  public BlockMetadataManagerView(BlockMetadataManager manager, Set<Long> pinnedInodes,
       Set<Long> lockedBlocks) {
     mMetadataManager = Preconditions.checkNotNull(manager);
     mPinnedInodes.addAll(Preconditions.checkNotNull(pinnedInodes));
@@ -68,7 +71,7 @@ public class BlockMetadataManagerView {
     for (Long blockId : lockedBlocks) {
       mInUseLocks.set(BlockLockManager.blockHashIndex(blockId));
     }
-    
+
     // iteratively create all StorageTierViews and StorageDirViews
     for (StorageTier tier : manager.getTiers()) {
       StorageTierView tierView = new StorageTierView(tier, this);
@@ -78,17 +81,29 @@ public class BlockMetadataManagerView {
   }
 
   /**
-   * Test if the block is pinned.
+   * Clears all marks of blocks to move in/out in all dir views.
+   */
+  public void clearBlockMarks() {
+    for (StorageTierView tierView : mTierViews) {
+      for (StorageDirView dirView : tierView.getDirViews()) {
+        dirView.clearBlockMarks();
+      }
+    }
+  }
+
+  /**
+   * Tests if the block is pinned.
    *
    * @param blockId to be tested
    * @return boolean, true if block is pinned
    */
   public boolean isBlockPinned(long blockId) {
-    return mPinnedInodes.contains(BlockInfo.computeInodeId(blockId));
+    return mPinnedInodes.contains(
+        BlockId.createBlockId(BlockId.getContainerId(blockId), BlockId.getMaxSequenceNumber()));
   }
 
   /**
-   * Test if the block is locked.
+   * Tests if the block is locked.
    *
    * @param blockId to be tested
    * @return boolean, true if block is locked
@@ -103,75 +118,105 @@ public class BlockMetadataManagerView {
   }
 
   /**
-   * Test if the block is evictable
+   * Tests if the block is evictable.
    *
    * @param blockId to be tested
    * @return boolean, true if the block can be evicted
    */
   public boolean isBlockEvictable(long blockId) {
-    return (!isBlockPinned(blockId) && !isBlockLocked(blockId));
+    return (!isBlockPinned(blockId) && !isBlockLocked(blockId) && !isBlockMarked(blockId));
   }
 
   /**
-   * Provide StorageTierView given tierAlias
+   * Test if the block is marked to move out of its current dir in this view.
+   *
+   * @param blockId the Id of the block
+   * @return boolean, true if the block is marked to move out
+   */
+  public boolean isBlockMarked(long blockId) {
+    for (StorageTierView tierView : mTierViews) {
+      for (StorageDirView dirView : tierView.getDirViews()) {
+        if (dirView.isMarkedToMoveOut(blockId)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Provides StorageTierView given tierAlias.
    *
    * @param tierAlias the alias of this tierView
    * @return the StorageTierView object associated with the alias
-   * @throws IOException if tierAlias is not found
+   * @throws IllegalArgumentException if tierAlias is not found
    */
-  public StorageTierView getTierView(int tierAlias) throws IOException {
-    // TODO: can we ensure the returning tierview is same as
-    // new StorageTierView(mMetadataManager.getTier(tierAlias)) ?
+  public StorageTierView getTierView(String tierAlias) {
     StorageTierView tierView = mAliasToTierViews.get(tierAlias);
-    if (null == tierView) {
-      throw new IOException("Cannot find tier view with alias: " + tierAlias);
+    if (tierView == null) {
+      throw new IllegalArgumentException(
+          ExceptionMessage.TIER_VIEW_ALIAS_NOT_FOUND.getMessage(tierAlias));
     } else {
       return tierView;
     }
   }
 
   /**
-   * Get all tierViews under this managerView
+   * Gets all tierViews under this managerView.
    *
    * @return the list of StorageTierViews
    */
   public List<StorageTierView> getTierViews() {
-    return mTierViews;
+    return Collections.unmodifiableList(mTierViews);
   }
 
   /**
-   * Get all tierViews before certain tierView
+   * Gets all tierViews before certain tierView.
    *
    * @param tierAlias the alias of a tierView
    * @return the list of StorageTierView
-   * @throws IOException if tierAlias is not found
+   * @throws IllegalArgumentException if tierAlias is not found
    */
-  public List<StorageTierView> getTierViewsBelow(int tierAlias) throws IOException {
-    // TODO: similar concern as in getTierView
-    int level = getTierView(tierAlias).getTierViewLevel();
-    return mTierViews.subList(level + 1, mTierViews.size());
+  public List<StorageTierView> getTierViewsBelow(String tierAlias) {
+    int ordinal = getTierView(tierAlias).getTierViewOrdinal();
+    return mTierViews.subList(ordinal + 1, mTierViews.size());
+  }
+
+  /**
+   * Get the next storage tier view.
+   *
+   * @param tierView the storage tier view
+   * @return the next storage tier view, null if this is the last tier view
+   */
+  public StorageTierView getNextTier(StorageTierView tierView) {
+    int nextOrdinal = tierView.getTierViewOrdinal() + 1;
+    if (nextOrdinal < mTierViews.size()) {
+      return mTierViews.get(nextOrdinal);
+    }
+    return null;
   }
 
   /**
    * Get available bytes given certain location
-   * Redirecting to {@link BlockMetadataManager#getAvailableBytes(BlockStoreLocation)}
+   * {@link BlockMetadataManager#getAvailableBytes(BlockStoreLocation)}.
    *
    * @param location location the check available bytes
    * @return available bytes
+   * @throws IllegalArgumentException if location does not belong to tiered storage
    */
-  public long getAvailableBytes(BlockStoreLocation location) throws IOException {
+  public long getAvailableBytes(BlockStoreLocation location) {
     return mMetadataManager.getAvailableBytes(location);
   }
 
   /**
-   * Return null if block is pinned or currently being locked,
-   * otherwise return {@link BlockMetadataManager#getBlockMeta(long)}
+   * Returns null if block is pinned or currently being locked, otherwise returns
+   * {@link BlockMetadataManager#getBlockMeta(long)}.
    *
    * @param blockId the block ID
    * @return metadata of the block or null
-   * @throws IOException if no BlockMeta for this blockId is found
+   * @throws BlockDoesNotExistException if no BlockMeta for this blockId is found
    */
-  public BlockMeta getBlockMeta(long blockId) throws IOException {
+  public BlockMeta getBlockMeta(long blockId) throws BlockDoesNotExistException {
     if (isBlockEvictable(blockId)) {
       return mMetadataManager.getBlockMeta(blockId);
     } else {

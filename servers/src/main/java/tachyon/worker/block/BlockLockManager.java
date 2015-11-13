@@ -15,216 +15,203 @@
 
 package tachyon.worker.block;
 
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.Sets;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hashing;
 
 import tachyon.Constants;
+import tachyon.exception.BlockDoesNotExistException;
+import tachyon.exception.ExceptionMessage;
+import tachyon.exception.InvalidWorkerStateException;
+import tachyon.worker.WorkerContext;
 
 /**
  * Handle all block locks.
  * <p>
  * This class is thread-safe.
  */
-public class BlockLockManager {
+public final class BlockLockManager {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
   /** The number of locks, larger value leads to finer locking granularity, but more space. */
-  // TODO: Make this configurable
-  private static final int NUM_LOCKS = 1000;
-  /** Time to wait to acquire a lock */
-  private static final int LOCK_ACQUIRE_TIMEOUT_MS = 5000;
+  private static int sNumLocks =
+      WorkerContext.getConf().getInt(Constants.WORKER_TIERED_STORE_BLOCK_LOCKS);
+
   /** The unique id of each lock */
   private static final AtomicLong LOCK_ID_GEN = new AtomicLong(0);
   /** A hashing function to map blockId to one of the locks */
   private static final HashFunction HASH_FUNC = Hashing.murmur3_32();
 
-  /** The object that serves all metadata requests for the block store */
-  private final BlockMetadataManager mMetaManager;
   /** A map from a block ID to its lock */
-  private final ClientRWLock[] mLockArray = new ClientRWLock[NUM_LOCKS];
-  /** A map from a user ID to all the locks hold by this user */
-  private final Map<Long, Set<Long>> mUserIdToLockIdsMap = new HashMap<Long, Set<Long>>();
+  private final ClientRWLock[] mLockArray = new ClientRWLock[sNumLocks];
+  /** A map from a session ID to all the locks hold by this session */
+  private final Map<Long, Set<Long>> mSessionIdToLockIdsMap = new HashMap<Long, Set<Long>>();
   /** A map from a lock ID to the lock record of it */
   private final Map<Long, LockRecord> mLockIdToRecordMap = new HashMap<Long, LockRecord>();
-  /** To guard access on mLockIdToRecordMap and mUserIdToLockIdsMap */
+  /** To guard access on mLockIdToRecordMap and mSessionIdToLockIdsMap */
   private final Object mSharedMapsLock = new Object();
 
-  public BlockLockManager(BlockMetadataManager metaManager) {
-    mMetaManager = Preconditions.checkNotNull(metaManager);
-    for (int i = 0; i < NUM_LOCKS; i ++) {
+  public BlockLockManager() {
+    for (int i = 0; i < sNumLocks; i ++) {
       mLockArray[i] = new ClientRWLock();
     }
   }
 
   /**
-   * Get index of the lock that will be used to lock the block
+   * Gets index of the lock that will be used to lock the block
    *
    * @param blockId the id of the block
    * @return hash index of the lock
    */
   public static int blockHashIndex(long blockId) {
-    return Math.abs(HASH_FUNC.hashLong(blockId).asInt()) % NUM_LOCKS;
+    return Math.abs(HASH_FUNC.hashLong(blockId).asInt()) % sNumLocks;
   }
 
   /**
-   * Attempts to lock a block if it exists.
+   * Locks a block. Note that, lock striping is used so even this block does not exist, a lock id is
+   * still returned.
    *
-   * @param userId the ID of user
+   * @param sessionId the ID of session
    * @param blockId the ID of block
    * @param blockLockType READ or WRITE
    * @return lock ID
-   * @throws IOException if the block does not exist or if the lock attempt exceeded the timeout
    */
-  public long lockBlock(long userId, long blockId, BlockLockType blockLockType) throws IOException {
-    // hashing blockId into the range of [0, NUM_LOCKS-1]
+  public long lockBlock(long sessionId, long blockId, BlockLockType blockLockType) {
+    // hashing blockId into the range of [0, sNumLocks - 1]
     int index = blockHashIndex(blockId);
     ClientRWLock blockLock = mLockArray[index];
     Lock lock;
     if (blockLockType == BlockLockType.READ) {
       lock = blockLock.readLock();
-    } else { // blockLockType == BlockLockType.WRITE
+    } else {
       lock = blockLock.writeLock();
     }
-
-    // The block lock may be busy, wait up to five seconds to obtain it.
-    boolean success;
-    try {
-      success = lock.tryLock(LOCK_ACQUIRE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-    } catch (InterruptedException ie) {
-      // The UserLock implementation does not throw this exception, something is wrong if it happens
-      LOG.error("Interrupted exception in tryLock, this should not occur!");
-      throw new IOException(ie.getMessage(), ie.getCause());
-    }
-    if (!success) {
-      String errMsg = "5s timeout when attempting lockBlock: " + blockId + " for user: " + userId;
-      LOG.error(errMsg);
-      throw new IOException(errMsg);
-    }
-    if (!mMetaManager.hasBlockMeta(blockId)) {
-      lock.unlock();
-      throw new IOException("Failed to lockBlock: no blockId " + blockId + " found");
-    }
+    lock.lock();
     long lockId = LOCK_ID_GEN.getAndIncrement();
     synchronized (mSharedMapsLock) {
-      mLockIdToRecordMap.put(lockId, new LockRecord(userId, blockId, lock));
-      Set<Long> userLockIds = mUserIdToLockIdsMap.get(userId);
-      if (null == userLockIds) {
-        mUserIdToLockIdsMap.put(userId, Sets.newHashSet(lockId));
+      mLockIdToRecordMap.put(lockId, new LockRecord(sessionId, blockId, lock));
+      Set<Long> sessionLockIds = mSessionIdToLockIdsMap.get(sessionId);
+      if (sessionLockIds == null) {
+        mSessionIdToLockIdsMap.put(sessionId, Sets.newHashSet(lockId));
       } else {
-        userLockIds.add(lockId);
+        sessionLockIds.add(lockId);
       }
     }
     return lockId;
   }
 
   /**
-   * Releases a lock by its lockId or throw IOException.
+   * Releases a lock by its lockId or throws BlockDoesNotExistException.
    *
    * @param lockId the ID of the lock
-   * @throws IOException if no lock is associated with this lock
+   * @throws BlockDoesNotExistException if no lock is associated with this lock id
    */
-  public void unlockBlock(long lockId) throws IOException {
+  public void unlockBlock(long lockId) throws BlockDoesNotExistException {
     Lock lock;
     synchronized (mSharedMapsLock) {
       LockRecord record = mLockIdToRecordMap.get(lockId);
-      if (null == record) {
-        throw new IOException("Failed to unlockBlock: lockId " + lockId + " has no lock record");
+      if (record == null) {
+        throw new BlockDoesNotExistException(ExceptionMessage.LOCK_RECORD_NOT_FOUND_FOR_LOCK_ID,
+            lockId);
       }
-      long userId = record.userId();
+      long sessionId = record.sessionId();
       lock = record.lock();
       mLockIdToRecordMap.remove(lockId);
-      Set<Long> userLockIds = mUserIdToLockIdsMap.get(userId);
-      userLockIds.remove(lockId);
-      if (userLockIds.isEmpty()) {
-        mUserIdToLockIdsMap.remove(userId);
+      Set<Long> sessionLockIds = mSessionIdToLockIdsMap.get(sessionId);
+      sessionLockIds.remove(lockId);
+      if (sessionLockIds.isEmpty()) {
+        mSessionIdToLockIdsMap.remove(sessionId);
       }
     }
     lock.unlock();
   }
 
-  // TODO: temporary, remove me later.
-  public void unlockBlock(long userId, long blockId) throws IOException {
+  // TODO(bin): Temporary, remove me later.
+  public void unlockBlock(long sessionId, long blockId) throws BlockDoesNotExistException {
     synchronized (mSharedMapsLock) {
-      Set<Long> userLockIds = mUserIdToLockIdsMap.get(userId);
-      for (long lockId : userLockIds) {
+      Set<Long> sessionLockIds = mSessionIdToLockIdsMap.get(sessionId);
+      for (long lockId : sessionLockIds) {
         LockRecord record = mLockIdToRecordMap.get(lockId);
-        if (null == record) {
-          throw new IOException("Failed to unlockBlock: lockId " + lockId + " has no lock record");
+        if (record == null) {
+          throw new BlockDoesNotExistException(ExceptionMessage.LOCK_RECORD_NOT_FOUND_FOR_LOCK_ID,
+              lockId);
         }
         if (blockId == record.blockId()) {
           mLockIdToRecordMap.remove(lockId);
-          userLockIds.remove(lockId);
-          if (userLockIds.isEmpty()) {
-            mUserIdToLockIdsMap.remove(userId);
+          sessionLockIds.remove(lockId);
+          if (sessionLockIds.isEmpty()) {
+            mSessionIdToLockIdsMap.remove(sessionId);
           }
           Lock lock = record.lock();
           lock.unlock();
           return;
         }
       }
-      throw new IOException("Failed to unlock blockId " + blockId + " for userId " + userId);
+      throw new BlockDoesNotExistException(
+          ExceptionMessage.LOCK_RECORD_NOT_FOUND_FOR_BLOCK_AND_SESSION, blockId, sessionId);
     }
   }
 
   /**
-   * Validates the lock is hold by the given user for the given block.
+   * Validates the lock is hold by the given session for the given block.
    *
-   * @param userId The ID of the user
+   * @param sessionId The ID of the session
    * @param blockId The ID of the block
    * @param lockId The ID of the lock
+   * @throws BlockDoesNotExistException when no lock record can be found for lockId
+   * @throws InvalidWorkerStateException when sessionId or blockId is not consistent with that in
+   *         the lock record for lockId
    */
-  public void validateLock(long userId, long blockId, long lockId) throws IOException {
+  public void validateLock(long sessionId, long blockId, long lockId)
+      throws BlockDoesNotExistException, InvalidWorkerStateException {
     synchronized (mSharedMapsLock) {
       LockRecord record = mLockIdToRecordMap.get(lockId);
-      if (null == record) {
-        throw new IOException("Failed to validateLock: lockId " + lockId + " has no lock record");
+      if (record == null) {
+        throw new BlockDoesNotExistException(ExceptionMessage.LOCK_RECORD_NOT_FOUND_FOR_LOCK_ID,
+            lockId);
       }
-      if (userId != record.userId()) {
-        throw new IOException("Failed to validateLock: lockId " + lockId + " is owned by userId "
-            + record.userId() + ", not " + userId);
+      if (sessionId != record.sessionId()) {
+        throw new InvalidWorkerStateException(ExceptionMessage.LOCK_ID_FOR_DIFFERENT_SESSION,
+            lockId, record.sessionId(), sessionId);
       }
       if (blockId != record.blockId()) {
-        throw new IOException("Failed to validateLock: lockId " + lockId + " is for blockId "
-            + record.blockId() + ", not " + blockId);
+        throw new InvalidWorkerStateException(ExceptionMessage.LOCK_ID_FOR_DIFFERENT_BLOCK, lockId,
+            record.blockId(), blockId);
       }
     }
   }
 
   /**
-   * Cleans up the locks currently hold by a specific user
+   * Cleans up the locks currently hold by a specific session
    *
-   * @param userId the ID of the user to cleanup
+   * @param sessionId the ID of the session to cleanup
    */
-  public void cleanupUser(long userId) {
+  public void cleanupSession(long sessionId) {
     synchronized (mSharedMapsLock) {
-      Set<Long> userLockIds = mUserIdToLockIdsMap.get(userId);
-      if (null == userLockIds) {
+      Set<Long> sessionLockIds = mSessionIdToLockIdsMap.get(sessionId);
+      if (sessionLockIds == null) {
         return;
       }
-      for (long lockId : userLockIds) {
+      for (long lockId : sessionLockIds) {
         LockRecord record = mLockIdToRecordMap.get(lockId);
-        if (null == record) {
-          LOG.error("Failed to cleanup userId {}: no lock record for lockId {}", userId, lockId);
+        if (record == null) {
+          LOG.error(ExceptionMessage.LOCK_RECORD_NOT_FOUND_FOR_LOCK_ID.getMessage(lockId));
           continue;
         }
         Lock lock = record.lock();
         lock.unlock();
         mLockIdToRecordMap.remove(lockId);
       }
-      mUserIdToLockIdsMap.remove(userId);
+      mSessionIdToLockIdsMap.remove(sessionId);
     }
   }
 
@@ -246,19 +233,19 @@ public class BlockLockManager {
   /**
    * Inner class to keep record of a lock.
    */
-  private class LockRecord {
-    private final long mUserId;
+  private static final class LockRecord {
+    private final long mSessionId;
     private final long mBlockId;
     private final Lock mLock;
 
-    LockRecord(long userId, long blockId, Lock lock) {
-      mUserId = userId;
+    LockRecord(long sessionId, long blockId, Lock lock) {
+      mSessionId = sessionId;
       mBlockId = blockId;
       mLock = lock;
     }
 
-    long userId() {
-      return mUserId;
+    long sessionId() {
+      return mSessionId;
     }
 
     long blockId() {

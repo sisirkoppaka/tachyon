@@ -19,17 +19,19 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
-import tachyon.conf.TachyonConf;
 import tachyon.Constants;
+import tachyon.conf.TachyonConf;
 import tachyon.underfs.UnderFileSystem;
-import tachyon.util.CommonUtils;
-import tachyon.util.NetworkUtils;
+import tachyon.util.io.FileUtils;
+import tachyon.util.io.PathUtils;
+import tachyon.util.network.NetworkAddressUtils;
+import tachyon.util.network.NetworkAddressUtils.ServiceType;
 
 /**
  * Local node UnderFilesystem implementation.
@@ -47,6 +49,11 @@ public class LocalUnderFileSystem extends UnderFileSystem {
   }
 
   @Override
+  public UnderFSType getUnderFSType() {
+    return UnderFSType.LOCAL;
+  }
+
+  @Override
   public void close() throws IOException {}
 
   @Override
@@ -58,7 +65,6 @@ public class LocalUnderFileSystem extends UnderFileSystem {
       stream.close();
       throw e;
     }
-    CommonUtils.setLocalFileStickyBit(path);
     return stream;
   }
 
@@ -83,7 +89,7 @@ public class LocalUnderFileSystem extends UnderFileSystem {
     if (recursive && file.isDirectory()) {
       String[] files = file.list();
       for (String child : files) {
-        success = success && delete(CommonUtils.concatPath(path, child), true);
+        success = success && delete(PathUtils.concatPath(path, child), true);
       }
     }
 
@@ -113,7 +119,7 @@ public class LocalUnderFileSystem extends UnderFileSystem {
   @Override
   public List<String> getFileLocations(String path) throws IOException {
     List<String> ret = new ArrayList<String>();
-    ret.add(NetworkUtils.getLocalHostName(mTachyonConf));
+    ret.add(NetworkAddressUtils.getConnectHost(ServiceType.WORKER_RPC, mTachyonConf));
     return ret;
   }
 
@@ -176,7 +182,7 @@ public class LocalUnderFileSystem extends UnderFileSystem {
     File file = new File(path);
     boolean created = createParent ? file.mkdirs() : file.mkdir();
     setPermission(path, "777");
-    CommonUtils.setLocalFileStickyBit(path);
+    FileUtils.setLocalDirStickyBit(path);
     return created;
   }
 
@@ -196,7 +202,7 @@ public class LocalUnderFileSystem extends UnderFileSystem {
 
   @Override
   public void setPermission(String path, String posixPerm) throws IOException {
-    CommonUtils.changeLocalFilePermission(path, posixPerm);
+    FileUtils.changeLocalFilePermission(path, posixPerm);
   }
 
   @Override

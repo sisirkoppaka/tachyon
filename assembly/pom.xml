@@ -3,14 +3,15 @@
   <parent>
     <groupId>org.tachyonproject</groupId>
     <artifactId>tachyon-parent</artifactId>
-    <version>0.7.2-SNAPSHOT</version>
+    <version>0.9.0-SNAPSHOT</version>
   </parent>
-  <groupId>org.tachyonproject</groupId>
   <artifactId>tachyon-assemblies</artifactId>
   <name>Tachyon Assemblies</name>
   <description>Assemblies of Tachyon system</description>
 
   <properties>
+    <!-- These need to be defined here as well as in the parent pom so that mvn can run
+         properly from sub-project directories -->
     <license.header.path>${project.parent.basedir}/build/license/</license.header.path>
     <checkstyle.path>${project.parent.basedir}/build/checkstyle/</checkstyle.path>
     <findbugs.path>${project.parent.basedir}/build/findbugs/</findbugs.path>
@@ -65,6 +66,46 @@
     </dependency>
   </dependencies>
 
+  <profiles>
+    <profile>
+      <id>mesos</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.tachyonproject</groupId>
+          <artifactId>tachyon-integration-mesos</artifactId>
+          <version>${project.version}</version>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <profile>
+      <id>yarn</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.tachyonproject</groupId>
+          <artifactId>tachyon-integration-yarn</artifactId>
+          <version>${project.version}</version>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <profile>
+      <id>developer</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.tachyonproject</groupId>
+          <artifactId>tachyon-integration-mesos</artifactId>
+          <version>${project.version}</version>
+        </dependency>
+        <dependency>
+          <groupId>org.tachyonproject</groupId>
+          <artifactId>tachyon-integration-yarn</artifactId>
+          <version>${project.version}</version>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
+
   <build>
     <plugins>
       <plugin>
@@ -82,11 +123,14 @@
               <finalName>${project.artifactId}-${project.version}-jar-with-dependencies</finalName>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer" />
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer" />
               </transformers>
               <filters>
                 <filter>
                   <artifact>*:* </artifact>
                   <excludes>
+                    <exclude>LICENSE</exclude>
                     <exclude>META-INF/*.SF</exclude>
                     <exclude>META-INF/*.DSA</exclude>
                     <exclude>META-INF/*.RSA</exclude>

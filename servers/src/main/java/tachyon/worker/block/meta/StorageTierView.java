@@ -15,8 +15,8 @@
 
 package tachyon.worker.block.meta;
 
-import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import com.google.common.base.Preconditions;
@@ -26,7 +26,7 @@ import tachyon.worker.block.BlockMetadataManagerView;
 /**
  * This class is a wrapper of {@link StorageTier} to provide more limited access
  */
-public class StorageTierView {
+public final class StorageTierView {
 
   /** the StorageTier this view is derived from */
   private final StorageTier mTier;
@@ -36,11 +36,10 @@ public class StorageTierView {
   private final BlockMetadataManagerView mManagerView;
 
   /**
-   * Create a StorageTierView using the actual StorageTier and the above BlockMetadataView
+   * Creates a StorageTierView using the actual StorageTier and the above BlockMetadataView
    *
    * @param tier which the tierView is constructed from
-   * @param view, the BlockMetadataManagerView this tierView is associated with
-   * @param StorageTierView constructed
+   * @param view the BlockMetadataManagerView this tierView is associated with
    */
   public StorageTierView(StorageTier tier, BlockMetadataManagerView view) {
     mTier = Preconditions.checkNotNull(tier);
@@ -53,33 +52,40 @@ public class StorageTierView {
   }
 
   /**
-   * Get the list of StorageDirView under this TierView
+   * @return a list of directory views in this storage tier view
    */
   public List<StorageDirView> getDirViews() {
-    return mDirViews;
+    return Collections.unmodifiableList(mDirViews);
   }
 
   /**
-   * Get a StorageDirView with a dirIndex
+   * Returns a directory view for the given index.
    *
-   * @param dirIndex of the dirView requested
-   * @throws IOException if dirIndex is out of range
+   * @param dirIndex the directory view index
+   * @return a directory view
    */
-  public StorageDirView getDirView(int dirIndex) throws IOException {
+  public StorageDirView getDirView(int dirIndex) {
     return mDirViews.get(dirIndex);
   }
 
   /**
-   * Get the alias for this tier
+   * @return the storage tier view alias
    */
-  public int getTierViewAlias() {
+  public String getTierViewAlias() {
     return mTier.getTierAlias();
   }
 
   /**
-   * Get the level for this tier
+   * @return the ordinal value of the storage tier view
    */
-  public int getTierViewLevel() {
-    return mTier.getTierLevel();
+  public int getTierViewOrdinal() {
+    return mTier.getTierOrdinal();
+  }
+
+  /**
+   * @return the block metadata manager view for this storage tier view
+   */
+  public BlockMetadataManagerView getBlockMetadataManagerView() {
+    return mManagerView;
   }
 }

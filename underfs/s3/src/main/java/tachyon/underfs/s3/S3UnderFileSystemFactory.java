@@ -17,12 +17,12 @@ package tachyon.underfs.s3;
 
 import java.io.IOException;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
-
 import org.jets3t.service.ServiceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Preconditions;
+import com.google.common.base.Throwables;
 
 import tachyon.Constants;
 import tachyon.TachyonURI;
@@ -70,14 +70,14 @@ public class S3UnderFileSystemFactory implements UnderFileSystemFactory {
    */
   private boolean addAndCheckAWSCredentials(TachyonConf tachyonConf) {
     String accessKeyConf = Constants.S3_ACCESS_KEY;
-    if (System.getProperty(accessKeyConf) != null && tachyonConf.get(accessKeyConf, null) == null) {
+    if (System.getProperty(accessKeyConf) != null && tachyonConf.get(accessKeyConf) == null) {
       tachyonConf.set(accessKeyConf, System.getProperty(accessKeyConf));
     }
     String secretKeyConf = Constants.S3_SECRET_KEY;
-    if (System.getProperty(secretKeyConf) != null && tachyonConf.get(secretKeyConf, null) == null) {
+    if (System.getProperty(secretKeyConf) != null && tachyonConf.get(secretKeyConf) == null) {
       tachyonConf.set(secretKeyConf, System.getProperty(secretKeyConf));
     }
-    return tachyonConf.get(accessKeyConf, null) != null
-        && tachyonConf.get(secretKeyConf, null) != null;
+    return tachyonConf.get(accessKeyConf) != null
+        && tachyonConf.get(secretKeyConf) != null;
   }
 }

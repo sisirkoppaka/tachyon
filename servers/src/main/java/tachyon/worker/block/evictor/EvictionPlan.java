@@ -19,33 +19,40 @@ import java.util.List;
 
 import com.google.common.base.Preconditions;
 
-import tachyon.Pair;
+import tachyon.collections.Pair;
 import tachyon.worker.block.BlockStoreLocation;
 
 /**
  * This class provides information about the blocks that need to be moved when evicting.
  */
-public class EvictionPlan {
-  /** A list of pairs of blockId and its location to move to */
-  private final List<Pair<Long, BlockStoreLocation>> mToMove;
-  /** A list of blockId to remove */
-  private final List<Long> mToEvict;
+public final class EvictionPlan {
+  /** A list of block transfer information, with block id, source and destination location */
+  private final List<BlockTransferInfo> mToMove;
+  /** A list of pairs of block id to remove and its location */
+  private final List<Pair<Long, BlockStoreLocation>> mToEvict;
 
-  public EvictionPlan(List<Pair<Long, BlockStoreLocation>> toTransfer, List<Long> toEvict) {
+  public EvictionPlan(List<BlockTransferInfo> toTransfer,
+      List<Pair<Long, BlockStoreLocation>> toEvict) {
     mToMove = Preconditions.checkNotNull(toTransfer);
     mToEvict = Preconditions.checkNotNull(toEvict);
   }
 
-  public List<Pair<Long, BlockStoreLocation>> toMove() {
+  /**
+   * @return a list of block transfer information, with block id, source and destination location
+   */
+  public List<BlockTransferInfo> toMove() {
     return mToMove;
   }
 
-  public List<Long> toEvict() {
+  /**
+   * @return a list of pairs of block id to remove and its location
+   */
+  public List<Pair<Long, BlockStoreLocation>> toEvict() {
     return mToEvict;
   }
 
   /**
-   * Whether the plan is empty, an empty plan means it is not null and both toMove and toEvict are
+   * Whether the plan is empty, an empty plan means both toMove and toEvict are
    * empty, also, an empty plan indicates no action (move or evict) needs to be taken to meet the
    * requirement.
    *

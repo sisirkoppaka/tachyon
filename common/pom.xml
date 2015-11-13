@@ -3,7 +3,7 @@
   <parent>
     <groupId>org.tachyonproject</groupId>
     <artifactId>tachyon-parent</artifactId>
-    <version>0.7.2-SNAPSHOT</version>
+    <version>0.9.0-SNAPSHOT</version>
   </parent>
   <artifactId>tachyon-common</artifactId>
   <packaging>jar</packaging>
@@ -11,6 +11,8 @@
   <description>Common utilities shared by different tachyon modules</description>
 
   <properties>
+    <!-- These need to be defined here as well as in the parent pom so that mvn can run
+         properly from sub-project directories -->
     <license.header.path>${project.parent.basedir}/build/license/</license.header.path>
     <checkstyle.path>${project.parent.basedir}/build/checkstyle/</checkstyle.path>
     <findbugs.path>${project.parent.basedir}/build/findbugs/</findbugs.path>
@@ -79,6 +81,21 @@
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-all</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-module-junit4</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.powermock</groupId>
+      <artifactId>powermock-api-mockito</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

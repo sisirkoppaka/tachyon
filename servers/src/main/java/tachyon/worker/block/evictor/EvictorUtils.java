@@ -15,73 +15,100 @@
 
 package tachyon.worker.block.evictor;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import tachyon.Pair;
 import tachyon.worker.block.BlockMetadataManagerView;
 import tachyon.worker.block.BlockStoreLocation;
-import tachyon.worker.block.meta.BlockMeta;
+import tachyon.worker.block.meta.StorageDirView;
+import tachyon.worker.block.meta.StorageTierView;
 
-public class EvictorUtils {
+/**
+ * Utility functions for the evictor package.
+ */
+// TODO(calvin): This could be moved into EvictorBase.
+public final class EvictorUtils {
+
   /**
-   * Checks whether the plan is legal for an evictor with cascading eviction feature like
-   * {@link LRUEvictor}. The plan is legal when the requested space can be satisfied, and there is
-   * enough space in lower tier to move in blocks from upper tier.
+   * Gets StorageDirView with max free space.
    *
-   * @param bytesToBeAvailable requested bytes to be available after eviction
-   * @param plan the eviction plan
-   * @param managerView  view of the meta data manager
-   * @return true if the above requirements are satisfied, otherwise false.
+   * @param bytesToBeAvailable space size to be requested
+   * @param location location that the space will be allocated in
+   * @param mManagerView a view of block metadata information
+   * @return the StorageDirView selected
    */
-  public static boolean legalCascadingPlan(long bytesToBeAvailable, EvictionPlan plan,
-      BlockMetadataManagerView managerView) throws IOException {
-    // reassure the plan is feasible: enough free space to satisfy bytesToBeAvailable, and enough
-    // space in lower tier to move blocks in upper tier there
-    Map<Integer, Long> bytesToBeAvailableInTier =
-        new HashMap<Integer, Long>(managerView.getTierViews().size());
-    List<Integer> tierAliases = new ArrayList<Integer>();
+  public static StorageDirView getDirWithMaxFreeSpace(long bytesToBeAvailable,
+      BlockStoreLocation location, BlockMetadataManagerView mManagerView) {
+    long maxFreeSize = -1;
+    StorageDirView selectedDirView = null;
 
-    List<Long> blockIds = new ArrayList<Long>(plan.toEvict().size() + plan.toMove().size());
-    blockIds.addAll(plan.toEvict());
-    for (Pair<Long, BlockStoreLocation> move : plan.toMove()) {
-      blockIds.add(move.getFirst());
-    }
-
-    for (long blockId : blockIds) {
-      BlockMeta block = managerView.getBlockMeta(blockId);
-      BlockStoreLocation blockDir = block.getBlockLocation();
-      long blockSize = block.getBlockSize();
-      int tierAlias = blockDir.tierAlias();
-      if (bytesToBeAvailableInTier.containsKey(tierAlias)) {
-        bytesToBeAvailableInTier
-            .put(tierAlias, bytesToBeAvailableInTier.get(tierAlias) + blockSize);
+    if (location.equals(BlockStoreLocation.anyTier())) {
+      for (StorageTierView tierView : mManagerView.getTierViews()) {
+        for (StorageDirView dirView : tierView.getDirViews()) {
+          if (dirView.getCommittedBytes() + dirView.getAvailableBytes() >= bytesToBeAvailable
+              && dirView.getAvailableBytes() > maxFreeSize) {
+            selectedDirView = dirView;
+            maxFreeSize = dirView.getAvailableBytes();
+          }
+        }
+      }
+    } else {
+      String tierAlias = location.tierAlias();
+      StorageTierView tierView = mManagerView.getTierView(tierAlias);
+      if (location.equals(BlockStoreLocation.anyDirInTier(tierAlias))) {
+        for (StorageDirView dirView : tierView.getDirViews()) {
+          if (dirView.getCommittedBytes() + dirView.getAvailableBytes() >= bytesToBeAvailable
+              && dirView.getAvailableBytes() > maxFreeSize) {
+            selectedDirView = dirView;
+            maxFreeSize = dirView.getAvailableBytes();
+          }
+        }
       } else {
-        tierAliases.add(tierAlias);
-        bytesToBeAvailableInTier
-            .put(tierAlias, managerView.getAvailableBytes(blockDir) + blockSize);
+        int dirIndex = location.dir();
+        StorageDirView dirView = tierView.getDirView(dirIndex);
+        if (dirView.getCommittedBytes() + dirView.getAvailableBytes() >= bytesToBeAvailable
+            && dirView.getAvailableBytes() > maxFreeSize) {
+          selectedDirView = dirView;
+          maxFreeSize = dirView.getAvailableBytes();
+        }
       }
+    }
+    return selectedDirView;
+  }
+
+  /**
+   * Finds a directory in the given location range with capacity upwards of the given bound.
+   *
+   * @param bytesToBeAvailable the capacity bound
+   * @param location the location range
+   * @param mManagerView the storage manager view
+   * @return a StorageDirView in the range of location that already has availableBytes larger than
+   *         bytesToBeAvailable, otherwise null
+   */
+  public static StorageDirView selectDirWithRequestedSpace(long bytesToBeAvailable,
+      BlockStoreLocation location, BlockMetadataManagerView mManagerView) {
+    if (location.equals(BlockStoreLocation.anyTier())) {
+      for (StorageTierView tierView : mManagerView.getTierViews()) {
+        for (StorageDirView dirView : tierView.getDirViews()) {
+          if (dirView.getAvailableBytes() >= bytesToBeAvailable) {
+            return dirView;
+          }
+        }
+      }
+      return null;
     }
 
-    // upper to lower tier
-    Collections.sort(tierAliases);
-    int currentTierAlias = tierAliases.get(0);
-    // first tier to free space from needs to have bytesToBeAvailable after eviction
-    boolean isLegal = bytesToBeAvailableInTier.get(currentTierAlias) >= bytesToBeAvailable;
-    for (int nextTierAlias : tierAliases.subList(1, tierAliases.size())) {
-      if (!isLegal) {
-        break;
+    String tierAlias = location.tierAlias();
+    StorageTierView tierView = mManagerView.getTierView(tierAlias);
+    if (location.equals(BlockStoreLocation.anyDirInTier(tierAlias))) {
+      for (StorageDirView dirView : tierView.getDirViews()) {
+        if (dirView.getAvailableBytes() >= bytesToBeAvailable) {
+          return dirView;
+        }
       }
-      // next tier should have enough space to hold blocks to be transferred from current tier
-      long nextTierFreeSpace = bytesToBeAvailableInTier.get(nextTierAlias);
-      long bytesToTransfer = bytesToBeAvailableInTier.get(currentTierAlias);
-      isLegal = isLegal && (nextTierFreeSpace >= bytesToTransfer);
-      currentTierAlias = nextTierAlias;
+      return null;
     }
-    return isLegal;
+
+    StorageDirView dirView = tierView.getDirView(location.dir());
+    return (dirView.getAvailableBytes() >= bytesToBeAvailable) ? dirView : null;
   }
+
+  private EvictorUtils() {} // prevent instantiation
 }

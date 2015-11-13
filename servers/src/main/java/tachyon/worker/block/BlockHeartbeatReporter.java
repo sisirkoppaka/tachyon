@@ -17,29 +17,32 @@ package tachyon.worker.block;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import com.google.common.collect.Lists;
 
 /**
  * Represents the delta of the block store within one heartbeat period. For now, newly committed
- * blocks do not pass through this master communication mechanism, instead it is synchronise through
- * {@link tachyon.worker.block.BlockDataManager#commitBlock(long, long)}. This class is thread safe.
+ * blocks do not pass through this master communication mechanism, instead it is synchronized
+ * through {@link tachyon.worker.block.BlockDataManager#commitBlock(long, long)}. This class is
+ * thread safe.
  */
-public class BlockHeartbeatReporter extends BlockStoreEventListenerBase {
+public final class BlockHeartbeatReporter extends BlockStoreEventListenerBase {
   /** Lock for operations on the removed and added block collections */
   private final Object mLock;
 
   /** List of blocks that were removed in the last heartbeat period */
   private final List<Long> mRemovedBlocks;
-  /** Map of storage dirs to a list of blocks that were added in the last heartbeat period */
-  private final Map<Long, List<Long>> mAddedBlocks;
+  /** Map of storage tier alias to a list of blocks that were added in the last heartbeat period */
+  private final Map<String, List<Long>> mAddedBlocks;
 
   public BlockHeartbeatReporter() {
     mLock = new Object();
     mRemovedBlocks = new ArrayList<Long>(100);
-    mAddedBlocks = new HashMap<Long, List<Long>>(20);
+    mAddedBlocks = new HashMap<String, List<Long>>(20);
   }
 
   /**
@@ -51,7 +54,7 @@ public class BlockHeartbeatReporter extends BlockStoreEventListenerBase {
   public BlockHeartbeatReport generateReport() {
     synchronized (mLock) {
       // Copy added and removed blocks
-      Map<Long, List<Long>> addedBlocks = new HashMap<Long, List<Long>>(mAddedBlocks);
+      Map<String, List<Long>> addedBlocks = new HashMap<String, List<Long>>(mAddedBlocks);
       List<Long> removedBlocks = new ArrayList<Long>(mRemovedBlocks);
       // Clear added and removed blocks
       mAddedBlocks.clear();
@@ -61,20 +64,19 @@ public class BlockHeartbeatReporter extends BlockStoreEventListenerBase {
   }
 
   @Override
-  public void onMoveBlockByClient(long userId, long blockId, BlockStoreLocation oldLocation,
+  public void onMoveBlockByClient(long sessionId, long blockId, BlockStoreLocation oldLocation,
       BlockStoreLocation newLocation) {
-    Long storageDirId = newLocation.getStorageDirId();
     synchronized (mLock) {
       // Remove the block from our list of added blocks in this heartbeat, if it was added, to
       // prevent adding the block twice.
       removeBlockFromAddedBlocks(blockId);
-      // Add the block back with the new storagedir.
-      addBlockToAddedBlocks(blockId, storageDirId);
+      // Add the block back with the new tier
+      addBlockToAddedBlocks(blockId, newLocation.tierAlias());
     }
   }
 
   @Override
-  public void onRemoveBlockByClient(long userId, long blockId) {
+  public void onRemoveBlockByClient(long sessionId, long blockId) {
     synchronized (mLock) {
       // Remove the block from list of added blocks, in case it was added in this heartbeat period.
       removeBlockFromAddedBlocks(blockId);
@@ -86,7 +88,7 @@ public class BlockHeartbeatReporter extends BlockStoreEventListenerBase {
   }
 
   @Override
-  public void onRemoveBlockByWorker(long userId, long blockId) {
+  public void onRemoveBlockByWorker(long sessionId, long blockId) {
     synchronized (mLock) {
       // Remove the block from list of added blocks, in case it was added in this heartbeat period.
       removeBlockFromAddedBlocks(blockId);
@@ -98,15 +100,14 @@ public class BlockHeartbeatReporter extends BlockStoreEventListenerBase {
   }
 
   @Override
-  public void onMoveBlockByWorker(long userId, long blockId, BlockStoreLocation oldLocation,
+  public void onMoveBlockByWorker(long sessionId, long blockId, BlockStoreLocation oldLocation,
       BlockStoreLocation newLocation) {
-    Long storageDirId = newLocation.getStorageDirId();
     synchronized (mLock) {
       // Remove the block from our list of added blocks in this heartbeat, if it was added, to
       // prevent adding the block twice.
       removeBlockFromAddedBlocks(blockId);
       // Add the block back with the new storagedir.
-      addBlockToAddedBlocks(blockId, storageDirId);
+      addBlockToAddedBlocks(blockId, newLocation.tierAlias());
     }
   }
 
@@ -114,13 +115,13 @@ public class BlockHeartbeatReporter extends BlockStoreEventListenerBase {
    * Adds a block to the list of added blocks in this heartbeat period.
    *
    * @param blockId The id of the block to add
-   * @param storageDirId The storage directory id containing the block
+   * @param tierAlias alias of the storage tier containing the block
    */
-  private void addBlockToAddedBlocks(long blockId, long storageDirId) {
-    if (mAddedBlocks.containsKey(storageDirId)) {
-      mAddedBlocks.get(storageDirId).add(blockId);
+  private void addBlockToAddedBlocks(long blockId, String tierAlias) {
+    if (mAddedBlocks.containsKey(tierAlias)) {
+      mAddedBlocks.get(tierAlias).add(blockId);
     } else {
-      mAddedBlocks.put(storageDirId, Lists.newArrayList(blockId));
+      mAddedBlocks.put(tierAlias, Lists.newArrayList(blockId));
     }
   }
 
@@ -130,9 +131,17 @@ public class BlockHeartbeatReporter extends BlockStoreEventListenerBase {
    * @param blockId The block to remove
    */
   private void removeBlockFromAddedBlocks(long blockId) {
-    for (List<Long> blockList : mAddedBlocks.values()) {
+    Iterator<Entry<String, List<Long>>> iterator = mAddedBlocks.entrySet().iterator();
+    while (iterator.hasNext()) {
+      Entry<String, List<Long>> entry = iterator.next();
+      List<Long> blockList = entry.getValue();
       if (blockList.contains(blockId)) {
         blockList.remove(blockId);
+        if (blockList.isEmpty()) {
+          iterator.remove();
+        }
+        // exit the loop when already find and remove blockId from mAddedBlocks
+        break;
       }
     }
   }

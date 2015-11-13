@@ -22,25 +22,26 @@ import io.netty.buffer.ByteBuf;
 /**
  * This represents a simple RPC response, containing an error.
  */
-public class RPCErrorResponse extends RPCResponse {
+public final class RPCErrorResponse extends RPCResponse {
   private final Status mStatus;
 
   public RPCErrorResponse(Status status) {
     mStatus = status;
   }
 
-  public Type getType() {
-    return Type.RPC_ERROR_RESPONSE;
-  }
-
   /**
-   * Decode the input {@link ByteBuf} into a {@link RPCErrorResponse} object and return it.
+   * Decodes the input {@link ByteBuf} into a {@link RPCErrorResponse} object and returns it.
    *
-   * @param in The input {@link ByteBuf}.
-   * @return The decoded RPCErrorResponse object.
+   * @param in The input {@link ByteBuf}
+   * @return The decoded RPCErrorResponse object
    */
   public static RPCErrorResponse decode(ByteBuf in) {
     return new RPCErrorResponse(Status.fromShort(in.readShort()));
+  }
+
+  @Override
+  public void encode(ByteBuf out) {
+    out.writeShort(mStatus.getId());
   }
 
   @Override
@@ -49,12 +50,17 @@ public class RPCErrorResponse extends RPCResponse {
     return Shorts.BYTES;
   }
 
-  @Override
-  public void encode(ByteBuf out) {
-    out.writeShort(mStatus.getId());
-  }
-
   public Status getStatus() {
     return mStatus;
+  }
+
+  @Override
+  public Type getType() {
+    return Type.RPC_ERROR_RESPONSE;
+  }
+
+  @Override
+  public String toString() {
+    return "RPCErrorResponse(" + mStatus + ")";
   }
 }

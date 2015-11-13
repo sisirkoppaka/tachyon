@@ -21,13 +21,9 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.google.common.base.Preconditions;
 import com.google.common.io.Closer;
 
-import tachyon.Constants;
 import tachyon.worker.block.meta.BlockMeta;
 
 /**
@@ -35,8 +31,7 @@ import tachyon.worker.block.meta.BlockMeta;
  * <p>
  * This class does not provide thread-safety. Corresponding lock must be acquired.
  */
-public class LocalFileBlockReader implements BlockReader {
-  private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
+public final class LocalFileBlockReader implements BlockReader {
   private final String mFilePath;
   private final RandomAccessFile mLocalFile;
   private final FileChannel mLocalFileChannel;
@@ -44,7 +39,7 @@ public class LocalFileBlockReader implements BlockReader {
   private final long mFileSize;
 
   /**
-   * Construct a Block reader given the metadata of this block
+   * Constructs a Block reader given the metadata of this block.
    *
    * @param blockMeta metadata of this block
    * @throws IOException if its file can not be open with "r" mode
@@ -54,7 +49,7 @@ public class LocalFileBlockReader implements BlockReader {
   }
 
   /**
-   * Construct a Block reader given the file path of the block
+   * Constructs a Block reader given the file path of the block.
    *
    * @param path file path of the block
    * @throws IOException if its file can not be open with "r" mode
@@ -80,7 +75,7 @@ public class LocalFileBlockReader implements BlockReader {
   public ByteBuffer read(long offset, long length) throws IOException {
     Preconditions.checkArgument(offset + length <= mFileSize,
         "offset=%s, length=%s, exceeding fileSize=%s", offset, length, mFileSize);
-    // TODO: May need to make sure length is an int
+    // TODO(calvin): May need to make sure length is an int.
     if (length == -1L) {
       length = mFileSize - offset;
     }

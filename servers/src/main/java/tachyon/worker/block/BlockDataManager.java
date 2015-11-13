@@ -16,27 +16,25 @@
 package tachyon.worker.block;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
-import org.apache.thrift.TException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import tachyon.Constants;
-import tachyon.Users;
-import tachyon.conf.TachyonConf;
-import tachyon.master.MasterClient;
-import tachyon.thrift.FailedToCheckpointException;
-import tachyon.thrift.FileDoesNotExistException;
-import tachyon.thrift.OutOfSpaceException;
+import tachyon.Sessions;
+import tachyon.client.UnderStorageType;
+import tachyon.client.WorkerBlockMasterClient;
+import tachyon.client.WorkerFileSystemMasterClient;
+import tachyon.exception.BlockAlreadyExistsException;
+import tachyon.exception.BlockDoesNotExistException;
+import tachyon.exception.FailedToCheckpointException;
+import tachyon.exception.InvalidWorkerStateException;
+import tachyon.exception.TachyonException;
+import tachyon.exception.WorkerOutOfSpaceException;
+import tachyon.thrift.FileInfo;
 import tachyon.underfs.UnderFileSystem;
-import tachyon.util.CommonUtils;
-import tachyon.util.NetworkUtils;
-import tachyon.util.ThreadFactoryUtils;
+import tachyon.util.io.FileUtils;
+import tachyon.util.io.PathUtils;
+import tachyon.worker.WorkerContext;
+import tachyon.worker.WorkerIdRegistry;
 import tachyon.worker.WorkerSource;
 import tachyon.worker.block.io.BlockReader;
 import tachyon.worker.block.io.BlockWriter;
@@ -47,62 +45,43 @@ import tachyon.worker.block.meta.TempBlockMeta;
  * Class is responsible for managing the Tachyon BlockStore and Under FileSystem. This class is
  * thread-safe.
  */
-public class BlockDataManager {
-  private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
-
+public final class BlockDataManager {
   /** Block store delta reporter for master heartbeat */
-  private final BlockHeartbeatReporter mHeartbeatReporter;
+  private BlockHeartbeatReporter mHeartbeatReporter;
   /** Block Store manager */
-  private final BlockStore mBlockStore;
-  /** Master client thread pool */
-  private final ExecutorService mMasterClientExecutorService;
-  /** Configuration values */
-  private final TachyonConf mTachyonConf;
+  private BlockStore mBlockStore;
   /** WorkerSource for collecting worker metrics */
-  private final WorkerSource mWorkerSource;
-  /** Metrics reporter that listens on block events and increases metrics counters*/
-  private final BlockMetricsReporter mMetricsReporter;
+  private WorkerSource mWorkerSource;
+  /** Metrics reporter that listens on block events and increases metrics counters */
+  private BlockMetricsReporter mMetricsReporter;
 
-  // TODO: See if this can be removed from the class
-  /** MasterClient, only used to inform the master of a new block in commitBlock */
-  private MasterClient mMasterClient;
-  /** UnderFileSystem Client */
-  private UnderFileSystem mUfs;
-  /** User metadata, used to keep track of user heartbeats */
-  private Users mUsers;
-  /** Id of this worker */
-  private long mWorkerId;
+  /** WorkerBlockMasterClient, only used to inform the master of a new block in commitBlock */
+  private WorkerBlockMasterClient mBlockMasterClient;
+  /** WorkerFileSystemMasterClient, only used to inform master of a new file in persistFile */
+  private WorkerFileSystemMasterClient mFileSystemMasterClient;
+  /** Session metadata, used to keep track of session heartbeats */
+  private Sessions mSessions = new Sessions();
 
   /**
    * Creates a BlockDataManager based on the configuration values.
    *
-   * @param tachyonConf the configuration values to use
    * @param workerSource object for collecting the worker metrics
-   * @throws IOException if the tiered store fails to initialize
+   * @param workerBlockMasterClient the block Tachyon master client for worker
+   * @param workerFileSystemMasterClient the file system Tachyon master client for worker
+   * @param blockStore the block store manager
+   * @throws IOException if fail to connect to under filesystem
    */
-  public BlockDataManager(TachyonConf tachyonConf, WorkerSource workerSource) throws IOException {
+  public BlockDataManager(WorkerSource workerSource,
+      WorkerBlockMasterClient workerBlockMasterClient,
+      WorkerFileSystemMasterClient workerFileSystemMasterClient, BlockStore blockStore)
+          throws IOException {
     mHeartbeatReporter = new BlockHeartbeatReporter();
-    mBlockStore = new TieredBlockStore(tachyonConf);
-    mTachyonConf = tachyonConf;
+    mBlockStore = blockStore;
     mWorkerSource = workerSource;
     mMetricsReporter = new BlockMetricsReporter(mWorkerSource);
 
-    mMasterClientExecutorService =
-        Executors.newFixedThreadPool(1,
-            ThreadFactoryUtils.build("worker-client-heartbeat-%d", true));
-    mMasterClient =
-        new MasterClient(BlockWorkerUtils.getMasterAddress(mTachyonConf),
-            mMasterClientExecutorService, mTachyonConf);
-
-    // Create Under FileSystem Client
-    String tachyonHome = mTachyonConf.get(Constants.TACHYON_HOME, Constants.DEFAULT_HOME);
-    String ufsAddress =
-        mTachyonConf.get(Constants.UNDERFS_ADDRESS, tachyonHome + "/underFSStorage");
-    mUfs = UnderFileSystem.get(ufsAddress, mTachyonConf);
-
-    // Connect to UFS to handle UFS security
-    InetSocketAddress workerAddress = BlockWorkerUtils.getWorkerAddress(mTachyonConf);
-    mUfs.connectFromWorker(mTachyonConf, NetworkUtils.getFqdnHost(workerAddress));
+    mBlockMasterClient = workerBlockMasterClient;
+    mFileSystemMasterClient = workerFileSystemMasterClient;
 
     // Register the heartbeat reporter so it can record block store changes
     mBlockStore.registerBlockStoreEventListener(mHeartbeatReporter);
@@ -110,123 +89,141 @@ public class BlockDataManager {
   }
 
   /**
-   * Aborts the temporary block created by the user.
+   * Aborts the temporary block created by the session.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to be aborted
-   * @throws IOException if the block does not exist
+   * @throws BlockAlreadyExistsException if blockId already exists in committed blocks
+   * @throws BlockDoesNotExistException if the temporary block cannot be found
+   * @throws InvalidWorkerStateException if blockId does not belong to sessionId
+   * @throws IOException if temporary block cannot be deleted
    */
-  public void abortBlock(long userId, long blockId) throws IOException {
-    mBlockStore.abortBlock(userId, blockId);
+  public void abortBlock(long sessionId, long blockId) throws BlockAlreadyExistsException,
+      BlockDoesNotExistException, InvalidWorkerStateException, IOException {
+    mBlockStore.abortBlock(sessionId, blockId);
   }
 
   /**
-   * Access the block for a given user. This should be called to update the evictor when necessary.
+   * Access the block for a given session. This should be called to update the evictor when
+   * necessary.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to access
-   * @throws IOException this exception is not thrown in the tiered block store implementation
+   * @throws BlockDoesNotExistException this exception is not thrown in the tiered block store
+   *         implementation
    */
-  public void accessBlock(long userId, long blockId) throws IOException {
-    mBlockStore.accessBlock(userId, blockId);
+  public void accessBlock(long sessionId, long blockId) throws BlockDoesNotExistException {
+    mBlockStore.accessBlock(sessionId, blockId);
   }
 
   /**
-   * Add the checkpoint information of a file. The information is from the user <code>userId</code>.
+   * Completes the process of persisting a file by renaming it to its final destination.
    *
-   * This method is normally triggered from {@link tachyon.client.FileOutStream#close()} if and only
-   * if {@link tachyon.client.WriteType#isThrough()} is true. The current implementation of
-   * checkpointing is that through {@link tachyon.client.WriteType} operations write to
-   * {@link tachyon.underfs.UnderFileSystem} on the client's write path, but under a user temp
-   * directory (temp directory is defined in the worker as {@link #getUserUfsTmpFolder(long)}).
+   * This method is normally triggered from {@link tachyon.client.file.FileOutStream#close()} if and
+   * only if {@link UnderStorageType#isAsyncPersist()} or {@link UnderStorageType#isSyncPersist()}
+   * is true. The current implementation of persistence is that through
+   * {@link tachyon.client.UnderStorageType} operations write to
+   * {@link tachyon.underfs.UnderFileSystem} on the client's write path, but under a temporary file.
    *
-   * @param userId The user id of the client who sends the notification
-   * @param fileId The id of the checkpointed file
-   * @throws TException if the file does not exist or cannot be renamed
+   * @param fileId a file id
+   * @param nonce a nonce used for temporary file creation
+   * @param ufsPath the UFS path of the file
    * @throws IOException if the update to the master fails
+   * @throws TachyonException if the file does not exist or cannot be renamed
    */
-  public void addCheckpoint(long userId, int fileId) throws TException, IOException {
-    // TODO This part needs to be changed.
-    String srcPath = CommonUtils.concatPath(getUserUfsTmpFolder(userId), fileId);
-    String ufsDataFolder =
-        mTachyonConf.get(Constants.UNDERFS_DATA_FOLDER, Constants.DEFAULT_DATA_FOLDER);
-    String dstPath = CommonUtils.concatPath(ufsDataFolder, fileId);
+  public void persistFile(long fileId, long nonce, String ufsPath)
+      throws IOException, TachyonException {
+    String tmpPath = PathUtils.temporaryFileName(fileId, nonce, ufsPath);
+    UnderFileSystem ufs = UnderFileSystem.get(tmpPath, WorkerContext.getConf());
     try {
-      if (!mUfs.rename(srcPath, dstPath)) {
-        throw new FailedToCheckpointException("Failed to rename " + srcPath + " to " + dstPath);
+      if (!ufs.exists(tmpPath)) {
+        // Location of the temporary file has changed, recompute it.
+        FileInfo fileInfo = mFileSystemMasterClient.getFileInfo(fileId);
+        ufsPath = fileInfo.getUfsPath();
+        tmpPath = PathUtils.temporaryFileName(fileId, nonce, ufsPath);
       }
-    } catch (IOException e) {
-      throw new FailedToCheckpointException("Failed to rename " + srcPath + " to " + dstPath);
+      if (!ufs.rename(tmpPath, ufsPath)) {
+        throw new FailedToCheckpointException("Failed to rename " + tmpPath + " to " + ufsPath);
+      }
+    } catch (IOException ioe) {
+      throw new FailedToCheckpointException(
+          "Failed to rename " + tmpPath + " to " + ufsPath + ": " + ioe);
     }
     long fileSize;
     try {
-      fileSize = mUfs.getFileSize(dstPath);
-    } catch (IOException e) {
-      throw new FailedToCheckpointException("Failed to getFileSize " + dstPath);
+      fileSize = ufs.getFileSize(ufsPath);
+    } catch (IOException ioe) {
+      throw new FailedToCheckpointException("Failed to getFileSize " + ufsPath);
     }
-    mMasterClient.addCheckpoint(mWorkerId, fileId, fileSize, dstPath);
+    mFileSystemMasterClient.persistFile(fileId, fileSize);
   }
 
   /**
-   * Cleans up after users, to prevent zombie users. This method is called periodically.
+   * Cleans up after sessions, to prevent zombie sessions. This method is called periodically by
+   * {@link SessionCleaner} thread.
    */
-  public void cleanupUsers() throws IOException {
-    for (long user : mUsers.getTimedOutUsers()) {
-      mUsers.removeUser(user);
-      mBlockStore.cleanupUser(user);
+  public void cleanupSessions() {
+    for (long session : mSessions.getTimedOutSessions()) {
+      mSessions.removeSession(session);
+      mBlockStore.cleanupSession(session);
     }
   }
 
   /**
-   * Commits a block to Tachyon managed space. The block must be temporary. The block is
-   * persisted after {@link BlockStore#commitBlock(long, long)}. The block will not be accessible
-   * until {@link MasterClient#worker_cacheBlock(long, long, long, long, long)}
-   * succeeds
+   * Commits a block to Tachyon managed space. The block must be temporary. The block is persisted
+   * after {@link BlockStore#commitBlock(long, long)}. The block will not be accessible until
+   * {@link WorkerBlockMasterClient#commitBlock} succeeds.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to commit
-   * @return true if successful, false otherwise
-   * @throws IOException if the block to commit does not exist
+   * @throws BlockAlreadyExistsException if blockId already exists in committed blocks
+   * @throws BlockDoesNotExistException if the temporary block cannot be found
+   * @throws InvalidWorkerStateException if blockId does not belong to sessionId
+   * @throws IOException if the block cannot be moved from temporary path to committed path
+   * @throws WorkerOutOfSpaceException if there is no more space left to hold the block
    */
-  public void commitBlock(long userId, long blockId) throws IOException {
-    mBlockStore.commitBlock(userId, blockId);
+  public void commitBlock(long sessionId, long blockId)
+      throws BlockAlreadyExistsException, BlockDoesNotExistException, InvalidWorkerStateException,
+      IOException, WorkerOutOfSpaceException {
+    mBlockStore.commitBlock(sessionId, blockId);
 
-    // TODO: Reconsider how to do this without heavy locking
+    // TODO(calvin): Reconsider how to do this without heavy locking.
     // Block successfully committed, update master with new block metadata
-    Long lockId = mBlockStore.lockBlock(userId, blockId);
+    Long lockId = mBlockStore.lockBlock(sessionId, blockId);
     try {
-      BlockMeta meta = mBlockStore.getBlockMeta(userId, blockId, lockId);
+      BlockMeta meta = mBlockStore.getBlockMeta(sessionId, blockId, lockId);
       BlockStoreLocation loc = meta.getBlockLocation();
-      Long storageDirId = loc.getStorageDirId();
       Long length = meta.getBlockSize();
       BlockStoreMeta storeMeta = mBlockStore.getBlockStoreMeta();
-      Long bytesUsedOnTier = storeMeta.getUsedBytesOnTiers().get(loc.tierAlias() - 1);
-      mMasterClient
-          .worker_cacheBlock(mWorkerId, bytesUsedOnTier, storageDirId, blockId, length);
-    } catch (TException te) {
-      throw new IOException("Failed to commit block to master.", te);
+      Long bytesUsedOnTier = storeMeta.getUsedBytesOnTiers().get(loc.tierAlias());
+      mBlockMasterClient.commitBlock(WorkerIdRegistry.getWorkerId(), bytesUsedOnTier,
+          loc.tierAlias(), blockId, length);
+    } catch (IOException ioe) {
+      throw new IOException("Failed to commit block to master.", ioe);
     } finally {
-      mBlockStore.unlockBlock(userId, blockId);
+      mBlockStore.unlockBlock(lockId);
     }
   }
 
   /**
    * Creates a block in Tachyon managed space. The block will be temporary until it is committed.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to create
-   * @param tierAlias The alias of the tier to place the new block in, -1 for any tier
+   * @param tierAlias The alias of the tier to place the new block in, BlockStoreLocation.ANY_TIER
+   *        for any tier
    * @param initialBytes The initial amount of bytes to be allocated
    * @return A string representing the path to the local file
-   * @throws IOException if the block already exists
-   * @throws OutOfSpaceException if there is no more space to store the block
+   * @throws IllegalArgumentException if location does not belong to tiered storage
+   * @throws BlockAlreadyExistsException if blockId already exists, either temporary or committed,
+   *         or block in eviction plan already exists
+   * @throws WorkerOutOfSpaceException if this Store has no more space than the initialBlockSize
+   * @throws IOException if blocks in eviction plan fail to be moved or deleted
    */
-  // TODO: We should avoid throwing IOException
-  public String createBlock(long userId, long blockId, int tierAlias, long initialBytes)
-      throws IOException, OutOfSpaceException {
-    BlockStoreLocation loc =
-        tierAlias == -1 ? BlockStoreLocation.anyTier() : BlockStoreLocation.anyDirInTier(tierAlias);
-    TempBlockMeta createdBlock = mBlockStore.createBlockMeta(userId, blockId, loc, initialBytes);
+  public String createBlock(long sessionId, long blockId, String tierAlias, long initialBytes)
+      throws BlockAlreadyExistsException, WorkerOutOfSpaceException, IOException {
+    BlockStoreLocation loc = BlockStoreLocation.anyDirInTier(tierAlias);
+    TempBlockMeta createdBlock = mBlockStore.createBlockMeta(sessionId, blockId, loc, initialBytes);
     return createdBlock.getPath();
   }
 
@@ -235,35 +232,58 @@ public class BlockDataManager {
    *
    * Call {@link #getTempBlockWriterRemote(long, long)} to get a writer for writing to the block.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to be created
-   * @param tierAlias The alias of the tier to place the new block in, -1 for any tier
+   * @param tierAlias The alias of the tier to place the new block in
    * @param initialBytes The initial amount of bytes to be allocated
-   * @throws FileDoesNotExistException if the block is not on the worker
-   * @throws IOException if the block writer cannot be obtained
+   * @throws IllegalArgumentException if location does not belong to tiered storage
+   * @throws BlockAlreadyExistsException if blockId already exists, either temporary or committed,
+   *         or block in eviction plan already exists
+   * @throws WorkerOutOfSpaceException if this Store has no more space than the initialBlockSize
+   * @throws IOException if blocks in eviction plan fail to be moved or deleted
    */
-  // TODO: We should avoid throwing IOException
-  public void createBlockRemote(long userId, long blockId, int tierAlias, long initialBytes)
-      throws FileDoesNotExistException, IOException {
+  public void createBlockRemote(long sessionId, long blockId, String tierAlias, long initialBytes)
+      throws BlockAlreadyExistsException, WorkerOutOfSpaceException, IOException {
     BlockStoreLocation loc = BlockStoreLocation.anyDirInTier(tierAlias);
-    TempBlockMeta createdBlock = mBlockStore.createBlockMeta(userId, blockId, loc, initialBytes);
-    CommonUtils.createBlockPath(createdBlock.getPath());
+    TempBlockMeta createdBlock = mBlockStore.createBlockMeta(sessionId, blockId, loc, initialBytes);
+    FileUtils.createBlockPath(createdBlock.getPath());
+  }
+
+  /**
+   * Frees space to make a specific amount of bytes available in the tier.
+   *
+   * @param sessionId the session ID
+   * @param availableBytes the amount of free space in bytes
+   * @param tierAlias the alias of the tier to free space
+   * @throws WorkerOutOfSpaceException if there is not enough space
+   * @throws BlockDoesNotExistException if blocks can not be found
+   * @throws IOException if blocks fail to be moved or deleted on file system
+   * @throws BlockAlreadyExistsException if blocks to move already exists in destination location
+   * @throws InvalidWorkerStateException if blocks to move/evict is uncommitted
+   */
+  public void freeSpace(long sessionId, long availableBytes, String tierAlias)
+      throws WorkerOutOfSpaceException, BlockDoesNotExistException, IOException,
+      BlockAlreadyExistsException, InvalidWorkerStateException {
+    BlockStoreLocation location = BlockStoreLocation.anyDirInTier(tierAlias);
+    mBlockStore.freeSpace(sessionId, availableBytes, location);
   }
 
   /**
    * Opens a {@link BlockWriter} for an existing temporary block. This method is only called from a
    * data server.
    *
-   * The temporary block must already exist with {@link #createBlockRemote(long, long, int, long)}.
+   * The temporary block must already exist with
+   * {@link #createBlockRemote(long, long, String, long)}.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to be opened for writing
    * @return the block writer for the local block file
-   * @throws IOException if the block writer cannot be obtained
+   * @throws BlockDoesNotExistException if the block cannot be found
+   * @throws IOException if block cannot be created
    */
-  public BlockWriter getTempBlockWriterRemote(long userId, long blockId)
-      throws FileDoesNotExistException, IOException {
-    return mBlockStore.getBlockWriter(userId, blockId);
+  public BlockWriter getTempBlockWriterRemote(long sessionId, long blockId)
+      throws BlockDoesNotExistException, IOException {
+    return mBlockStore.getBlockWriter(sessionId, blockId);
   }
 
   /**
@@ -287,24 +307,14 @@ public class BlockDataManager {
   }
 
   /**
-   * Gets the temporary folder for the user in the under filesystem.
-   *
-   * @param userId The id of the client
-   * @return the path to the under filesystem temporary folder for the client
-   */
-  public String getUserUfsTmpFolder(long userId) {
-    return mUsers.getUserUfsTempFolder(userId);
-  }
-
-  /**
    * Gets the metadata of a block given its blockId or throws IOException. This method does not
    * require a lock ID so the block is possible to be moved or removed after it returns.
    *
    * @param blockId the block ID
    * @return metadata of the block
-   * @throws IOException if no BlockMeta for this blockId is found
+   * @throws BlockDoesNotExistException if no BlockMeta for this blockId is found
    */
-  public BlockMeta getVolatileBlockMeta(long blockId) throws IOException {
+  public BlockMeta getVolatileBlockMeta(long blockId) throws BlockDoesNotExistException {
     return mBlockStore.getVolatileBlockMeta(blockId);
   }
 
@@ -321,159 +331,158 @@ public class BlockDataManager {
   /**
    * Obtains a read lock the block.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to be locked
    * @return the lockId that uniquely identifies the lock obtained
-   * @throws IOException if the lock cannot be obtained, for example because the block does not
-   * exist
+   * @throws BlockDoesNotExistException if blockId cannot be found, for example, evicted already
    */
-  // TODO: We should avoid throwing IOException
-  public long lockBlock(long userId, long blockId) throws IOException {
-    return mBlockStore.lockBlock(userId, blockId);
+  public long lockBlock(long sessionId, long blockId) throws BlockDoesNotExistException {
+    return mBlockStore.lockBlock(sessionId, blockId);
   }
 
   /**
    * Moves a block from its current location to a target location, currently only tier level moves
    * are supported
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to move
-   * @param tierAlias The tier to move the block to
-   * @throws IOException if an error occurs during move
+   * @param tierAlias The alias of the tier to move the block to
+   * @throws IllegalArgumentException if tierAlias is out of range of tiered storage
+   * @throws BlockDoesNotExistException if blockId cannot be found
+   * @throws BlockAlreadyExistsException if blockId already exists in committed blocks of the
+   *         newLocation
+   * @throws InvalidWorkerStateException if blockId has not been committed
+   * @throws WorkerOutOfSpaceException if newLocation does not have enough extra space to hold the
+   *         block
+   * @throws IOException if block cannot be moved from current location to newLocation
    */
-  // TODO: We should avoid throwing IOException
-  public void moveBlock(long userId, long blockId, int tierAlias) throws IOException {
+  public void moveBlock(long sessionId, long blockId, String tierAlias)
+      throws BlockDoesNotExistException, BlockAlreadyExistsException, InvalidWorkerStateException,
+      WorkerOutOfSpaceException, IOException {
     BlockStoreLocation dst = BlockStoreLocation.anyDirInTier(tierAlias);
-    mBlockStore.moveBlock(userId, blockId, dst);
+    mBlockStore.moveBlock(sessionId, blockId, dst);
   }
 
   /**
    * Gets the path to the block file in local storage. The block must be a permanent block, and the
    * caller must first obtain the lock on the block.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to read
    * @param lockId The id of the lock on this block
    * @return a string representing the path to this block in local storage
-   * @throws IOException if the block cannot be found
+   * @throws BlockDoesNotExistException if the blockId cannot be found in committed blocks or lockId
+   *         cannot be found
+   * @throws InvalidWorkerStateException if sessionId or blockId is not the same as that in the
+   *         LockRecord of lockId
    */
-  public String readBlock(long userId, long blockId, long lockId) throws IOException {
-    BlockMeta meta = mBlockStore.getBlockMeta(userId, blockId, lockId);
+  public String readBlock(long sessionId, long blockId, long lockId)
+      throws BlockDoesNotExistException, InvalidWorkerStateException {
+    BlockMeta meta = mBlockStore.getBlockMeta(sessionId, blockId, lockId);
     return meta.getPath();
   }
 
   /**
    * Gets the block reader for the block. This method is only called by a data server.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to read
    * @param lockId The id of the lock on this block
    * @return the block reader for the block
-   * @throws IOException if an error occurs when obtaining the reader
+   * @throws BlockDoesNotExistException if lockId is not found
+   * @throws InvalidWorkerStateException if sessionId or blockId is not the same as that in the
+   *         LockRecord of lockId
+   * @throws IOException if block cannot be read
    */
-  // TODO: We should avoid throwing IOException
-  public BlockReader readBlockRemote(long userId, long blockId, long lockId) throws IOException {
-    return mBlockStore.getBlockReader(userId, blockId, lockId);
+  public BlockReader readBlockRemote(long sessionId, long blockId, long lockId)
+      throws BlockDoesNotExistException, InvalidWorkerStateException, IOException {
+    return mBlockStore.getBlockReader(sessionId, blockId, lockId);
   }
 
   /**
    * Frees a block from Tachyon managed space.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to be freed
-   * @throws IOException if an error occurs when removing the block
+   * @throws InvalidWorkerStateException if blockId has not been committed
+   * @throws BlockDoesNotExistException if block cannot be found
+   * @throws IOException if block cannot be removed from current path
    */
-  // TODO: We should avoid throwing IOException
-  public void removeBlock(long userId, long blockId) throws IOException {
-    mBlockStore.removeBlock(userId, blockId);
+  public void removeBlock(long sessionId, long blockId)
+      throws InvalidWorkerStateException, BlockDoesNotExistException, IOException {
+    mBlockStore.removeBlock(sessionId, blockId);
   }
 
   /**
    * Request an amount of space for a block in its storage directory. The block must be a temporary
    * block.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param blockId The id of the block to allocate space to
    * @param additionalBytes The amount of bytes to allocate
-   * @throws IOException if an error occurs when allocating space
+   * @throws BlockDoesNotExistException if blockId can not be found, or some block in eviction plan
+   *         cannot be found
+   * @throws WorkerOutOfSpaceException if requested space can not be satisfied
+   * @throws IOException if blocks in {@link tachyon.worker.block.evictor.EvictionPlan} fail to be
+   *         moved or deleted on file system
    */
-  // TODO: We should avoid throwing IOException
-  public void requestSpace(long userId, long blockId, long additionalBytes) throws IOException {
-    mBlockStore.requestSpace(userId, blockId, additionalBytes);
-  }
-
-  /**
-   * Instantiates the user metadata object. This should only be called once and is a temporary work
-   * around.
-   *
-   * @param users The user metadata object
-   */
-  public void setUsers(Users users) {
-    mUsers = users;
-  }
-
-  /**
-   * Sets the workerId. This should only be called once and is a temporary work around.
-   *
-   * @param workerId Worker id to update to
-   */
-  public void setWorkerId(long workerId) {
-    mWorkerId = workerId;
+  public void requestSpace(long sessionId, long blockId, long additionalBytes)
+      throws BlockDoesNotExistException, WorkerOutOfSpaceException, IOException {
+    mBlockStore.requestSpace(sessionId, blockId, additionalBytes);
   }
 
   /**
    * Stop the block data manager. This method should only be called when terminating the worker.
    */
-  public void stop() {
-    mMasterClient.close();
-    mMasterClientExecutorService.shutdown();
-  }
+  public void stop() {}
 
   /**
    * Relinquishes the lock with the specified lock id.
    *
    * @param lockId The id of the lock to relinquish
+   * @throws BlockDoesNotExistException if lockId cannot be found
    */
-  public void unlockBlock(long lockId) throws IOException {
+  public void unlockBlock(long lockId) throws BlockDoesNotExistException {
     mBlockStore.unlockBlock(lockId);
   }
 
-  // TODO: Remove when lock and reads are separate operations
-  public void unlockBlock(long userId, long blockId) throws IOException {
-    mBlockStore.unlockBlock(userId, blockId);
+  // TODO(calvin): Remove when lock and reads are separate operations.
+  public void unlockBlock(long sessionId, long blockId) throws BlockDoesNotExistException {
+    mBlockStore.unlockBlock(sessionId, blockId);
   }
 
   /**
    * Handles the heartbeat from a client.
    *
-   * @param userId The id of the client
+   * @param sessionId The id of the client
    * @param metrics The set of metrics the client has gathered since the last heartbeat
    */
-  public void userHeartbeat(long userId, List<Long> metrics) {
-    mUsers.userHeartbeat(userId);
-    // TODO: Provide a way to disable the metrics collection
-    if (null != metrics && !metrics.isEmpty() && metrics.get(Constants.CLIENT_METRICS_VERSION_INDEX)
-        == Constants.CLIENT_METRICS_VERSION) {
-      mWorkerSource.incBlocksReadLocal(metrics.get(Constants.BLOCKS_READ_LOCAL_INDEX));
-      mWorkerSource.incBlocksReadRemote(metrics.get(Constants.BLOCKS_READ_REMOTE_INDEX));
-      mWorkerSource.incBlocksWrittenLocal(metrics.get(Constants.BLOCKS_WRITTEN_LOCAL_INDEX));
-      mWorkerSource.incBlocksWrittenRemote(metrics.get(Constants.BLOCKS_WRITTEN_REMOTE_INDEX));
-      mWorkerSource.incBytesReadLocal(metrics.get(Constants.BYTES_READ_LOCAL_INDEX));
-      mWorkerSource.incBytesReadRemote(metrics.get(Constants.BYTES_READ_REMOTE_INDEX));
-      mWorkerSource.incBytesReadUfs(metrics.get(Constants.BYTES_READ_UFS_INDEX));
-      mWorkerSource.incBytesWrittenLocal(metrics.get(Constants.BYTES_WRITTEN_LOCAL_INDEX));
-      mWorkerSource.incBytesWrittenRemote(metrics.get(Constants.BYTES_WRITTEN_REMOTE_INDEX));
-      mWorkerSource.incBytesWrittenUfs(metrics.get(Constants.BYTES_WRITTEN_UFS_INDEX));
-    }
+  public void sessionHeartbeat(long sessionId, List<Long> metrics) {
+    mSessions.sessionHeartbeat(sessionId);
+    mMetricsReporter.updateClientMetrics(metrics);
   }
 
   /**
-   * Set the pinlist for the underlying blockstore.
-   * Typically called by PinListSync.
+   * Set the pinlist for the underlying blockstore. Typically called by PinListSync.
    *
-   * @param pinnedInodes, a set of pinned inodes
+   * @param pinnedInodes a set of pinned inodes
    */
-  public void updatePinList(Set<Integer> pinnedInodes) {
+  public void updatePinList(Set<Long> pinnedInodes) {
     mBlockStore.updatePinnedInodes(pinnedInodes);
+  }
+
+  /**
+   * Gets the file information.
+   *
+   * @param fileId the file id
+   * @return the file info
+   * @throws IOException if an I/O error occurs
+   */
+  public FileInfo getFileInfo(long fileId) throws IOException {
+    try {
+      return mFileSystemMasterClient.getFileInfo(fileId);
+    } catch (TachyonException e) {
+      throw new IOException(e);
+    }
   }
 }

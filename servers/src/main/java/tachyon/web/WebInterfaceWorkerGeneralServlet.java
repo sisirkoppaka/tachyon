@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
@@ -27,23 +28,24 @@ import javax.servlet.http.HttpServletResponse;
 
 import tachyon.Constants;
 import tachyon.Version;
-import tachyon.util.CommonUtils;
+import tachyon.collections.Pair;
+import tachyon.util.FormatUtils;
 import tachyon.worker.block.BlockDataManager;
 import tachyon.worker.block.BlockStoreMeta;
 
 /**
  * Servlets that shows a worker's general information, including tiered storage details.
  */
-public class WebInterfaceWorkerGeneralServlet extends HttpServlet {
+public final class WebInterfaceWorkerGeneralServlet extends HttpServlet {
 
   public static class UiStorageDir {
-    private final long mStorageDirId;
+    private final String mTierAlias;
     private final String mDirPath;
     private final long mCapacityBytes;
     private final long mUsedBytes;
 
-    public UiStorageDir(long storageDirId, String dirPath, long capacityBytes, long usedBytes) {
-      mStorageDirId = storageDirId;
+    public UiStorageDir(String tierAlias, String dirPath, long capacityBytes, long usedBytes) {
+      mTierAlias = tierAlias;
       mDirPath = dirPath;
       mCapacityBytes = capacityBytes;
       mUsedBytes = usedBytes;
@@ -57,8 +59,8 @@ public class WebInterfaceWorkerGeneralServlet extends HttpServlet {
       return mDirPath;
     }
 
-    public long getStorageDirId() {
-      return mStorageDirId;
+    public String getTierAlias() {
+      return mTierAlias;
     }
 
     public long getUsedBytes() {
@@ -66,16 +68,39 @@ public class WebInterfaceWorkerGeneralServlet extends HttpServlet {
     }
   }
 
+  public static class UiWorkerInfo {
+    public static final boolean DEBUG = Constants.DEBUG;
+    public static final String VERSION = Version.VERSION;
+    private final String mWorkerAddress;
+    private final long mStartTimeMs;
+
+    public UiWorkerInfo(String workerAddress, long startTimeMs) {
+      mWorkerAddress = workerAddress;
+      mStartTimeMs = startTimeMs;
+    }
+
+    public String getStartTime() {
+      return Utils.convertMsToDate(mStartTimeMs);
+    }
+
+    public String getUptime() {
+      return Utils.convertMsToClockTime(System.currentTimeMillis() - mStartTimeMs);
+    }
+
+    public String getWorkerAddress() {
+      return mWorkerAddress;
+    }
+
+  }
+
   private static final long serialVersionUID = 3735143768058466487L;
   private final transient BlockDataManager mBlockDataManager;
-  private final transient InetSocketAddress mWorkerAddress;
-  private final transient long mStartTimeMs;
+  private final UiWorkerInfo mUiWorkerInfo;
 
   public WebInterfaceWorkerGeneralServlet(BlockDataManager blockDataManager,
       InetSocketAddress workerAddress, long startTimeMs) {
     mBlockDataManager = blockDataManager;
-    mWorkerAddress = workerAddress;
-    mStartTimeMs = startTimeMs;
+    mUiWorkerInfo = new UiWorkerInfo(workerAddress.toString(), startTimeMs);
   }
 
   @Override
@@ -92,39 +117,34 @@ public class WebInterfaceWorkerGeneralServlet extends HttpServlet {
    * @throws IOException
    */
   private void populateValues(HttpServletRequest request) throws IOException {
-    request.setAttribute("debug", Constants.DEBUG);
-
-    request.setAttribute("workerAddress", mWorkerAddress.toString());
-
-    request.setAttribute("uptime",
-        Utils.convertMsToClockTime(System.currentTimeMillis() - mStartTimeMs));
-
-    request.setAttribute("startTime", Utils.convertMsToDate(mStartTimeMs));
-
-    request.setAttribute("version", Version.VERSION);
+    request.setAttribute("workerInfo", mUiWorkerInfo);
 
     BlockStoreMeta storeMeta = mBlockDataManager.getStoreMeta();
     long capacityBytes = 0L;
     long usedBytes = 0L;
-    List<Long> capacityBytesOnTiers = storeMeta.getCapacityBytesOnTiers();
-    List<Long> usedBytesOnTiers = storeMeta.getUsedBytesOnTiers();
-    for (int i = 0; i < capacityBytesOnTiers.size(); i ++) {
-      capacityBytes += capacityBytesOnTiers.get(i);
-      usedBytes += usedBytesOnTiers.get(i);
+    Map<String, Long> capacityBytesOnTiers = storeMeta.getCapacityBytesOnTiers();
+    Map<String, Long> usedBytesOnTiers = storeMeta.getUsedBytesOnTiers();
+    for (long capacity : capacityBytesOnTiers.values()) {
+      capacityBytes += capacity;
+    }
+    for (long used : usedBytesOnTiers.values()) {
+      usedBytes += used;
     }
 
-    request.setAttribute("capacityBytes", CommonUtils.getSizeFromBytes(capacityBytes));
+    request.setAttribute("capacityBytes", FormatUtils.getSizeFromBytes(capacityBytes));
 
-    request.setAttribute("usedBytes", CommonUtils.getSizeFromBytes(usedBytes));
+    request.setAttribute("usedBytes", FormatUtils.getSizeFromBytes(usedBytes));
 
     request.setAttribute("capacityBytesOnTiers", capacityBytesOnTiers);
 
     request.setAttribute("usedBytesOnTiers", usedBytesOnTiers);
 
-    List<UiStorageDir> storageDirs = new ArrayList<UiStorageDir>(storeMeta.getDirPaths().size());
-    for (long dirId : storeMeta.getDirPaths().keySet()) {
-      storageDirs.add(new UiStorageDir(dirId, storeMeta.getDirPaths().get(dirId), storeMeta
-          .getCapacityBytesOnDirs().get(dirId), storeMeta.getUsedBytesOnDirs().get(dirId)));
+    List<UiStorageDir> storageDirs =
+        new ArrayList<UiStorageDir>(storeMeta.getCapacityBytesOnDirs().size());
+    for (Pair<String, String> tierAndDirPath : storeMeta.getCapacityBytesOnDirs().keySet()) {
+      storageDirs.add(new UiStorageDir(tierAndDirPath.getFirst(), tierAndDirPath.getSecond(),
+          storeMeta.getCapacityBytesOnDirs().get(tierAndDirPath), storeMeta.getUsedBytesOnDirs()
+              .get(tierAndDirPath)));
     }
 
     request.setAttribute("storageDirs", storageDirs);

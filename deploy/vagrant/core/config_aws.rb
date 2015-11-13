@@ -13,18 +13,24 @@ def config_aws(config, i, total, name)
   config.vm.synced_folder ".", "/vagrant", disabled: true
 
   config.vm.provider :aws do |aws, override|
-    aws.access_key_id = ENV["AWS_ACCESS_KEY_ID"]
-    aws.secret_access_key = ENV["AWS_SECRET_ACCESS_KEY"]
+    aws.access_key_id = ENV['AWS_ACCESS_KEY_ID']
+    aws.secret_access_key = ENV['AWS_SECRET_ACCESS_KEY']
     aws.keypair_name = KEYPAIR
-    aws.security_groups = SECURITY_GROUP
     aws.ami = AMI
     aws.region = REGION
     aws.instance_type = INSTANCE_TYPE
     aws.block_device_mapping = BLOCK_DEVICE_MAPPING
     aws.tags = {
-      'Name' => TAG + name,
+      'Name' => TAG + "-" + name,
     }
 	  aws.availability_zone = AVAILABILITY_ZONE
+    if (SUBNET != nil and SUBNET != "")
+      aws.subnet_id = SUBNET
+      aws.associate_public_ip = TRUE
+      aws.security_groups = ENV['AWS_SECURITY_GROUP_ID_TACH']
+    else
+      aws.security_groups = SECURITY_GROUP
+    end
     aws.user_data = "#!/bin/bash\necho 'Defaults:root !requiretty' > /etc/sudoers.d/998-vagrant-cloud-init-requiretty && echo 'Defaults:ec2-user !requiretty' > /etc/sudoers.d/999-vagrant-cloud-init-requiretty && chmod 440 /etc/sudoers.d/998-vagrant-cloud-init-requiretty && chmod 440 /etc/sudoers.d/999-vagrant-cloud-init-requiretty"
   end
 end

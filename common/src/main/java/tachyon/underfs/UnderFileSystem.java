@@ -15,17 +15,17 @@
 
 package tachyon.underfs;
 
-import java.io.InputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
 
 import com.google.common.base.Preconditions;
 
-import tachyon.conf.TachyonConf;
 import tachyon.Constants;
-import tachyon.Pair;
 import tachyon.TachyonURI;
+import tachyon.collections.Pair;
+import tachyon.conf.TachyonConf;
 
 /**
  * Tachyon stores data into an under layer file system. Any file system implementing this interface
@@ -72,10 +72,10 @@ public abstract class UnderFileSystem {
   }
 
   /**
-   * Get the UnderFileSystem instance according to its schema.
+   * Gets the UnderFileSystem instance according to its schema.
    *
-   * @param path file path storing over the ufs.
-   * @param tachyonConf the {@link tachyon.conf.TachyonConf} instance.
+   * @param path file path storing over the ufs
+   * @param tachyonConf the {@link tachyon.conf.TachyonConf} instance
    * @throws IllegalArgumentException for unknown scheme
    * @return instance of the under layer file system
    */
@@ -84,20 +84,39 @@ public abstract class UnderFileSystem {
   }
 
   /**
-   * Get the UnderFileSystem instance according to its scheme and configuration.
+   * Gets the UnderFileSystem instance according to its scheme and configuration.
    *
    * @param path file path storing over the ufs
    * @param ufsConf the configuration object for ufs only
-   * @param tachyonConf the {@link tachyon.conf.TachyonConf} instance.
+   * @param tachyonConf the {@link tachyon.conf.TachyonConf} instance
    * @throws IllegalArgumentException for unknown scheme
    * @return instance of the under layer file system
    */
   public static UnderFileSystem get(String path, Object ufsConf, TachyonConf tachyonConf) {
     Preconditions.checkArgument(path != null, "path may not be null");
+    Preconditions.checkNotNull(tachyonConf);
 
     // Use the registry to determine the factory to use to create the client
     return UnderFileSystemRegistry.create(path, tachyonConf, ufsConf);
   }
+
+  /**
+   * Type of under filesystem, to be used by {@link #getUnderFSType()} to determine which concrete
+   * under filesystem implementation is being used. New types of under filesystem should be added
+   * below and returned by the implementation of {@link #getUnderFSType()}.
+   */
+  public enum UnderFSType {
+    LOCAL,
+    HDFS,
+    S3,
+    GLUSTERFS,
+    SWIFT,
+  }
+
+  /**
+   * @return type of concrete under filesystem implementation
+   */
+  public abstract UnderFSType getUnderFSType();
 
   /**
    * Determines if the given path is on a Hadoop under file system
@@ -106,12 +125,11 @@ public abstract class UnderFileSystem {
    * {@link String#startsWith(String)} to see if the configured schemas are found.
    */
   public static boolean isHadoopUnderFS(final String path, TachyonConf tachyonConf) {
-    // TODO In Hadoop 2.x this can be replaced with the simpler call to
+    // TODO(hy): In Hadoop 2.x this can be replaced with the simpler call to
     // FileSystem.getFileSystemClass() without any need for having users explicitly declare the file
-    // system schemes to treat as being HDFS
-    // However as long as pre 2.x versions of Hadoop are supported this is not an option and we have
-    // to continue to use this method
-    for (final String prefix : tachyonConf.getList(Constants.UNDERFS_HADOOP_PREFIXS, ",", null)) {
+    // system schemes to treat as being HDFS. However as long as pre 2.x versions of Hadoop are
+    // supported this is not an option and we have to continue to use this method.
+    for (final String prefix : tachyonConf.getList(Constants.UNDERFS_HDFS_PREFIXS, ",")) {
       if (path.startsWith(prefix)) {
         return true;
       }
@@ -144,7 +162,8 @@ public abstract class UnderFileSystem {
       String header = path.getScheme() + "://";
       String authority = (path.hasAuthority()) ? path.getAuthority() : "";
       if (header.equals(Constants.HEADER) || header.equals(Constants.HEADER_FT)
-          || isHadoopUnderFS(header, tachyonConf) || header.equals(Constants.HEADER_S3N)) {
+          || isHadoopUnderFS(header, tachyonConf) || header.equals(Constants.HEADER_S3)
+          || header.equals(Constants.HEADER_S3N)) {
         if (path.getPath().isEmpty()) {
           return new Pair<String, String>(header + authority, TachyonURI.SEPARATOR);
         } else {
@@ -307,7 +326,7 @@ public abstract class UnderFileSystem {
    *
    * @param path The path to query
    * @param type The type of queries
-   * @return The space in bytes.
+   * @return The space in bytes
    * @throws IOException
    */
   public abstract long getSpace(String path, SpaceType type) throws IOException;
@@ -335,7 +354,7 @@ public abstract class UnderFileSystem {
    * There is no guarantee that the name strings in the resulting array will appear in any specific
    * order; they are not, in particular, guaranteed to appear in alphabetical order.
    *
-   * @param path the path to list.
+   * @param path the path to list
    * @return An array of strings naming the files and directories in the directory denoted by this
    *         abstract pathname. The array will be empty if the directory is empty. Returns
    *         {@code null} if this abstract pathname does not denote a directory, or if an I/O error
@@ -377,18 +396,18 @@ public abstract class UnderFileSystem {
   public abstract boolean rename(String src, String dst) throws IOException;
 
   /**
-   * To set the configuration object for UnderFileSystem. The conf object is understood by the
+   * Sets the configuration object for UnderFileSystem. The conf object is understood by the
    * concrete underfs's implementation.
    *
-   * @param conf The configuration object accepted by ufs.
+   * @param conf the configuration object accepted by ufs
    */
   public abstract void setConf(Object conf);
 
   /**
-   * Change posix file permission
+   * Changes posix file permission
    *
    * @param path path of the file
-   * @param posixPerm standard posix permission like "777", "775", etc.
+   * @param posixPerm standard posix permission like "777", "775", etc
    * @throws IOException
    */
   public abstract void setPermission(String path, String posixPerm) throws IOException;

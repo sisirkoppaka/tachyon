@@ -22,23 +22,24 @@ import org.eclipse.jetty.servlet.ServletHolder;
 import com.google.common.base.Preconditions;
 
 import tachyon.conf.TachyonConf;
+import tachyon.util.network.NetworkAddressUtils.ServiceType;
 import tachyon.worker.block.BlockDataManager;
 
 /**
  * A worker's UI web server
  */
-public class WorkerUIWebServer extends UIWebServer {
-  public WorkerUIWebServer(String serverName, InetSocketAddress webAddress,
+public final class WorkerUIWebServer extends UIWebServer {
+  public WorkerUIWebServer(ServiceType serviceType, InetSocketAddress webAddress,
       BlockDataManager blockdataManager, InetSocketAddress workerAddress, long startTimeMs,
       TachyonConf conf) {
-    super(serverName, webAddress, conf);
+    super(serviceType, webAddress, conf);
     Preconditions.checkNotNull(blockdataManager, "Block data manager cannot be null");
     Preconditions.checkNotNull(workerAddress, "Worker address cannot be null");
 
     mWebAppContext.addServlet(new ServletHolder(new WebInterfaceWorkerGeneralServlet(
         blockdataManager, workerAddress, startTimeMs)), "/home");
     mWebAppContext.addServlet(new ServletHolder(new WebInterfaceWorkerBlockInfoServlet(
-        blockdataManager, conf)), "/blockInfo");
+        blockdataManager)), "/blockInfo");
     mWebAppContext.addServlet(new ServletHolder(new WebInterfaceDownloadLocalServlet()),
         "/downloadLocal");
     mWebAppContext.addServlet(new ServletHolder(new WebInterfaceBrowseLogsServlet(false)),

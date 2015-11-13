@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -26,11 +26,12 @@ import org.slf4j.LoggerFactory;
 import tachyon.Constants;
 import tachyon.TachyonURI;
 import tachyon.Version;
-import tachyon.client.OutStream;
-import tachyon.client.TachyonByteBuffer;
-import tachyon.client.TachyonFile;
+import tachyon.client.ReadType;
 import tachyon.client.TachyonFS;
+import tachyon.client.TachyonFile;
 import tachyon.client.WriteType;
+import tachyon.client.file.FileInStream;
+import tachyon.client.file.FileOutStream;
 import tachyon.client.table.RawColumn;
 import tachyon.client.table.RawTable;
 import tachyon.conf.TachyonConf;
@@ -42,15 +43,17 @@ public class BasicRawTableOperations implements Callable<Boolean> {
 
   private final TachyonURI mMasterAddress;
   private final TachyonURI mTablePath;
+  private final ReadType mReadType;
   private final WriteType mWriteType;
   private final int mDataLength = 20;
   private final int mMetadataLength = 5;
-  private int mId;
+  private long mId;
 
   public BasicRawTableOperations(TachyonURI masterAddress, TachyonURI tablePath,
-      WriteType writeType) {
+      ReadType readType, WriteType writeType) {
     mMasterAddress = masterAddress;
     mTablePath = tablePath;
+    mReadType = readType;
     mWriteType = writeType;
   }
 
@@ -87,17 +90,14 @@ public class BasicRawTableOperations implements Callable<Boolean> {
     for (int column = 0; column < COLS; column ++) {
       RawColumn rawColumn = rawTable.getRawColumn(column);
       TachyonFile tFile = rawColumn.getPartition(0);
-
-      TachyonByteBuffer buf = tFile.readByteBuffer(0);
-      if (buf == null) {
-        tFile.recache();
-        buf = tFile.readByteBuffer(0);
-      }
-      buf.mData.order(ByteOrder.nativeOrder());
+      FileInStream is = tFile.getInStream(mReadType);
+      ByteBuffer buf = ByteBuffer.allocate(mDataLength * 4);
+      is.read(buf.array());
+      buf.order(ByteOrder.nativeOrder());
       for (int k = 0; k < mDataLength; k ++) {
-        pass = pass && (buf.mData.getInt() == k);
+        pass = pass && (buf.getInt() == k);
       }
-      buf.close();
+      is.close();
     }
     return pass;
   }
@@ -113,7 +113,7 @@ public class BasicRawTableOperations implements Callable<Boolean> {
             + " under column " + column);
       }
 
-      ByteBuffer buf = ByteBuffer.allocate(80);
+      ByteBuffer buf = ByteBuffer.allocate(mDataLength * 4);
       buf.order(ByteOrder.nativeOrder());
       for (int k = 0; k < mDataLength; k ++) {
         buf.putInt(k);
@@ -121,20 +121,21 @@ public class BasicRawTableOperations implements Callable<Boolean> {
       buf.flip();
 
       TachyonFile tFile = rawColumn.getPartition(0);
-      OutStream os = tFile.getOutStream(mWriteType);
+      FileOutStream os = tFile.getOutStream(mWriteType);
       os.write(buf.array());
       os.close();
     }
   }
 
   public static void main(String[] args) throws IllegalArgumentException {
-    if (args.length != 3) {
-      System.out.println("java -cp target/tachyon-" + Version.VERSION
-          + "-jar-with-dependencies.jar "
-          + "tachyon.examples.BasicRawTableOperations <TachyonMasterAddress> <FilePath>");
+    if (args.length != 4) {
+      System.out.println("java -cp " + Version.TACHYON_JAR + " "
+          + BasicRawTableOperations.class.getName() + " <master address> <file path> "
+          + " <ReadType (CACHE_PROMOTE | CACHE | NO_CACHE)> <WriteType (MUST_CACHE | CACHE_THROUGH"
+          + " | THROUGH)>");
       System.exit(-1);
     }
     Utils.runExample(new BasicRawTableOperations(new TachyonURI(args[0]), new TachyonURI(args[1]),
-        WriteType.valueOf(args[2])));
+        ReadType.valueOf(args[2]), WriteType.valueOf(args[3])));
   }
 }

@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -40,9 +40,9 @@ public class RecomputeCommand implements Runnable {
 
   /**
    * Create a new RecomputeCommand.
-   * 
-   * @param cmd The command to execute
-   * @param filePath The path of the output file, which records the output of the recompute process.
+   *
+   * @param cmd the command to execute
+   * @param filePath the path of the output file, which records the output of the recompute process
    */
   public RecomputeCommand(String cmd, String filePath) {
     mCommand = cmd;
@@ -52,7 +52,7 @@ public class RecomputeCommand implements Runnable {
   @Override
   public void run() {
     try {
-      LOG.info("Exec " + mCommand + " output to " + mFilePath);
+      LOG.info("Exec {} output to {}", mCommand, mFilePath);
       Process p = java.lang.Runtime.getRuntime().exec(mCommand);
       String line;
       Closer closer = Closer.create();
@@ -76,7 +76,7 @@ public class RecomputeCommand implements Runnable {
       }
 
       p.waitFor();
-      LOG.info("Exec " + mCommand + " output to " + mFilePath + " done.");
+      LOG.info("Exec {} output to {} done.", mCommand, mFilePath);
     } catch (IOException e) {
       LOG.error(e.getMessage());
     } catch (InterruptedException e) {

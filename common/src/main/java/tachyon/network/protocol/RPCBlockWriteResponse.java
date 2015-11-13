@@ -24,15 +24,16 @@ import io.netty.buffer.ByteBuf;
 /**
  * This represents the response to a {@link RPCBlockWriteRequest}.
  */
-public class RPCBlockWriteResponse extends RPCResponse {
-  private final long mUserId;
+public final class RPCBlockWriteResponse extends RPCResponse {
+  private final long mSessionId;
   private final long mBlockId;
   private final long mOffset;
   private final long mLength;
   private final Status mStatus;
 
-  public RPCBlockWriteResponse(long userId, long blockId, long offset, long length, Status status) {
-    mUserId = userId;
+  public RPCBlockWriteResponse(long sessionId, long blockId, long offset, long length,
+      Status status) {
+    mSessionId = sessionId;
     mBlockId = blockId;
     mOffset = offset;
     mLength = length;
@@ -43,54 +44,56 @@ public class RPCBlockWriteResponse extends RPCResponse {
    * Creates a {@link RPCBlockWriteResponse} object that indicates an error for the given
    * {@link RPCBlockWriteRequest}.
    *
-   * @param request The {@link RPCBlockWriteRequest} to generated the {@link RPCBlockResponse} for.
-   * @param status The {@link tachyon.network.protocol.RPCResponse.Status} for the response.
-   * @return The generated {@link RPCBlockWriteResponse} object.
+   * @param request the {@link RPCBlockWriteRequest} to generated the {@link RPCBlockReadResponse}
+   *        for.
+   * @param status the {@link tachyon.network.protocol.RPCResponse.Status} for the response
+   * @return The generated {@link RPCBlockWriteResponse} object
    */
   public static RPCBlockWriteResponse createErrorResponse(final RPCBlockWriteRequest request,
       final Status status) {
     Preconditions.checkArgument(status != Status.SUCCESS);
     // The response has no payload, so length must be 0.
-    return new RPCBlockWriteResponse(request.getUserId(), request.getBlockId(), request.getOffset(),
-        request.getLength(), status);
+    return new RPCBlockWriteResponse(request.getSessionId(), request.getBlockId(),
+        request.getOffset(), request.getLength(), status);
   }
 
+  @Override
   public Type getType() {
     return Type.RPC_BLOCK_WRITE_RESPONSE;
   }
 
   /**
-   * Decode the input {@link ByteBuf} into a {@link RPCBlockWriteResponse} object and return it.
+   * Decodes the input {@link ByteBuf} into a {@link RPCBlockWriteResponse} object and returns it.
    *
    * @param in the input {@link ByteBuf}
-   * @return The decoded RPCBlockResponse object
+   * @return the decoded RPCBlockWriteResponse object
    */
   public static RPCBlockWriteResponse decode(ByteBuf in) {
-    long userId = in.readLong();
+    long sessionId = in.readLong();
     long blockId = in.readLong();
     long offset = in.readLong();
     long length = in.readLong();
     short status = in.readShort();
-    return new RPCBlockWriteResponse(userId, blockId, offset, length, Status.fromShort(status));
+    return new RPCBlockWriteResponse(sessionId, blockId, offset, length, Status.fromShort(status));
   }
 
   @Override
   public int getEncodedLength() {
-    // 4 longs (mUserId, mBlockId, mOffset, mLength) + 1 short (mStatus)
+    // 4 longs (mSessionId, mBlockId, mOffset, mLength) + 1 short (mStatus)
     return Longs.BYTES * 4 + Shorts.BYTES;
   }
 
   @Override
   public void encode(ByteBuf out) {
-    out.writeLong(mUserId);
+    out.writeLong(mSessionId);
     out.writeLong(mBlockId);
     out.writeLong(mOffset);
     out.writeLong(mLength);
     out.writeShort(mStatus.getId());
   }
 
-  public long getUserId() {
-    return mUserId;
+  public long getSessionId() {
+    return mSessionId;
   }
 
   public long getBlockId() {

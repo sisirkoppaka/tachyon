@@ -16,6 +16,7 @@
 package tachyon.hadoop;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.Properties;
 
 import org.apache.hadoop.conf.Configuration;
@@ -32,13 +33,10 @@ import tachyon.conf.TachyonConf;
 public class ConfUtils {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
 
-  /**
-   * Prevent instantiation
-   */
-  private ConfUtils() {}
+  private ConfUtils() {} // Prevent instantiation.
 
   /**
-   * Store the source {@link tachyon.conf.TachyonConf} object to the target
+   * Stores the source {@link tachyon.conf.TachyonConf} object to the target
    * Hadoop {@link org.apache.hadoop.conf.Configuration} object.
    *
    * @param source the {@link tachyon.conf.TachyonConf} to be stored
@@ -52,32 +50,45 @@ public class ConfUtils {
     try {
       DefaultStringifier.store(target, confProperties, Constants.TACHYON_CONF_SITE);
     } catch (IOException ex) {
-      LOG.error("Unable to store TachyonConf in Haddop configuration", ex);
+      LOG.error("Unable to store TachyonConf in Hadoop configuration", ex);
       throw new RuntimeException(ex);
     }
   }
 
   /**
-   * Load {@link TachyonConf} from Hadoop {@link org.apache.hadoop.conf.Configuration} source
-   * @param source the {@link org.apache.hadoop.conf.Configuration} to load from.
+   * Loads {@link TachyonConf} from Hadoop {@link org.apache.hadoop.conf.Configuration} source.
+   *
+   * @param source the {@link org.apache.hadoop.conf.Configuration} to load from
    * @return instance of {@link TachyonConf} to be loaded
    */
   public static TachyonConf loadFromHadoopConfiguration(Configuration source) {
     // Load TachyonConf if any and merge to the one in TachyonFS
     // Push TachyonConf to the Job conf
+    Properties tachyonConfProperties = null;
     if (source.get(Constants.TACHYON_CONF_SITE) != null) {
       LOG.info("Found TachyonConf site from Job configuration for Tachyon");
-      Properties tachyonConfProperties = null;
       try {
         tachyonConfProperties = DefaultStringifier.load(source, Constants.TACHYON_CONF_SITE,
             Properties.class);
       } catch (IOException e) {
-        LOG.error("Unable to load TachyonConf from Haddop configuration", e);
+        LOG.error("Unable to load TachyonConf from Hadoop configuration", e);
         throw new RuntimeException(e);
       }
-
-      return tachyonConfProperties != null ? new TachyonConf(tachyonConfProperties) : null;
     }
-    return null;
+    if (tachyonConfProperties == null) {
+      tachyonConfProperties = new Properties();
+    }
+    // Load any Tachyon configuration parameters existing in the Hadoop configuration.
+    for (Map.Entry<String, String> entry : source) {
+      String propertyName = entry.getKey();
+      // TODO(gene): use a better way to enumerate every Tachyon configuration parameter
+      if (propertyName.startsWith("tachyon.")
+          || propertyName.equals(Constants.S3_ACCESS_KEY)
+          || propertyName.equals(Constants.S3_SECRET_KEY)) {
+        tachyonConfProperties.put(propertyName, entry.getValue());
+      }
+    }
+    LOG.info("Loading Tachyon properties from Hadoop configuration: {}", tachyonConfProperties);
+    return new TachyonConf(tachyonConfProperties);
   }
 }

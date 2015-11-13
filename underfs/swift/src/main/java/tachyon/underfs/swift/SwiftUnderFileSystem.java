@@ -21,8 +21,8 @@ import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import tachyon.conf.TachyonConf;
 import tachyon.Constants;
+import tachyon.conf.TachyonConf;
 import tachyon.underfs.hdfs.HdfsUnderFileSystem;
 
 /**
@@ -34,6 +34,11 @@ public class SwiftUnderFileSystem extends HdfsUnderFileSystem {
   public SwiftUnderFileSystem(String fsDefaultName, TachyonConf tachyonConf, Object conf) {
     super(fsDefaultName, tachyonConf, conf);
     LOG.debug("Swift constuctor method");
+  }
+
+  @Override
+  public UnderFSType getUnderFSType() {
+    return UnderFSType.SWIFT;
   }
 
   /**
@@ -49,12 +54,12 @@ public class SwiftUnderFileSystem extends HdfsUnderFileSystem {
    * @param config Hadoop Configuration
    */
   protected void prepareConfiguration(String path, TachyonConf tachyonConf, Configuration config) {
-    // To disable the instance cache for hdfs client, otherwise it causes the
-    // FileSystem closed exception. Being configurable for unit/integration
-    // test only, and not expose to the end-user currently.
+    // To disable the instance cache for hdfs client, otherwise it causes the FileSystem closed
+    // exception. Being configurable for unit/integration test only, and not expose to the end-user
+    // currently.
     config.set("fs.swift.impl.disable.cache", "true");
-    SwiftUnderFileSystemUtils.addKey(config, tachyonConf, Constants.UNDERFS_HADOOP_CONFIGURATION);
-    config.addResource(new Path(config.get(Constants.UNDERFS_HADOOP_CONFIGURATION)));
+    SwiftUnderFileSystemUtils.addKey(config, tachyonConf, Constants.UNDERFS_HDFS_CONFIGURATION);
+    config.addResource(new Path(config.get(Constants.UNDERFS_HDFS_CONFIGURATION)));
     super.prepareConfiguration(path, tachyonConf, config);
   }
 }

@@ -1,3 +1,4 @@
+# Environment setup: network, ssh, mount disk, install development tools, etc.
 - hosts: all
   tasks:
     - include: roles/common/tasks/main.yml
@@ -12,20 +13,21 @@
       sudo: yes
       when: provider == "os"
 
+# Download, compile, configure all the cluster components.
 - hosts: TachyonMaster
   tasks:
     - include: roles/vagrant_utils/tasks/main.yml
 
     # Ufs
     - include: roles/ufs_{{ ufs }}/tasks/download_release.yml
-    - include: roles/ufs_{{ ufs }}/tasks/config.yml
 
     # Tachyon
     - include: roles/tachyon/tasks/download_release.yml
       when: tachyon_type == "Release"
 
     - include: roles/tachyon/tasks/clone_local_repo.yml
-      when: (tachyon_type == "Local") and (provider != "vb") # vb syncs local repo to vm through kernel module instead of rsync
+      # vb syncs local repo to vm through kernel module instead of rsync
+      when: (tachyon_type == "Local") and (provider != "vb")
 
     - include: roles/tachyon/tasks/clone_remote_repo.yml
       when: tachyon_type == "Github"
@@ -37,6 +39,9 @@
 
     - include: roles/lib/tasks/tachyon_tiered.yml
       when: (ufs != "hadoop1") and (ufs != "hadoop2")
+
+    # some ufs configurations depend on tachyon like tachyon client jar path for hdfs
+    - include: roles/ufs_{{ ufs }}/tasks/config.yml
 
     # Spark
     - include: roles/spark/tasks/download_release.yml
@@ -51,7 +56,18 @@
     - include: roles/spark/tasks/config.yml
       when: spark_type != "None"
 
-- hosts: TachyonWorker*
+    # Mesos
+    - include: roles/mesos/tasks/download_release.yml
+      when: mesos_type == "Release"
+
+    - include: roles/mesos/tasks/clone_remote_repo.yml
+      when: mesos_type == "Github"
+
+    - include: roles/mesos/tasks/compile.yml
+      when: mesos_type == "Github"
+
+# Rsync compiled and configured packages to other machines.
+- hosts: all
   tasks:
     - include: roles/ufs_{{ ufs }}/tasks/rsync_dist.yml
 
@@ -60,12 +76,19 @@
     - include: roles/spark/tasks/rsync_dist.yml
       when: spark_type != "None"
 
+    - include: roles/mesos/tasks/rsync_dist.yml
+      when: mesos_type != "None"
+
+# Start UFS.
 - hosts: TachyonMaster
   tasks:
     - include: roles/ufs_{{ ufs }}/tasks/start.yml
 
-    - include: roles/tachyon/tasks/start.yml
+# Start Tachyon on the specified platform(e.x. standalone, mesos)
+- include: start_tachyon_on_{{ tachyon_platform }}.yml
 
+# Start computation frameworks.
+- hosts: TachyonMaster
+  tasks:
     - include: roles/spark/tasks/start.yml
       when: spark_type != "None"
-

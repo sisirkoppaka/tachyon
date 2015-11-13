@@ -22,16 +22,16 @@ import org.slf4j.LoggerFactory;
 
 import tachyon.conf.TachyonConf;
 import tachyon.underfs.UnderFileSystem;
-import tachyon.util.CommonUtils;
 import tachyon.util.UnderFileSystemUtils;
+import tachyon.util.io.PathUtils;
 
 /**
  * Format Tachyon File System.
  */
 public class Format {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
-  private static final String USAGE = "java -cp target/tachyon-" + Version.VERSION
-      + "-jar-with-dependencies.jar tachyon.Format <MASTER/WORKER>";
+  private static final String USAGE = String.format("java -cp %s tachyon.Format <MASTER/WORKER>",
+      Version.TACHYON_JAR);
 
   private static boolean formatFolder(String name, String folder, TachyonConf tachyonConf)
       throws IOException {
@@ -39,7 +39,7 @@ public class Format {
     LOG.info("Formatting {}:{}", name, folder);
     if (ufs.exists(folder)) {
       for (String file : ufs.list(folder)) {
-        if (!ufs.delete(CommonUtils.concatPath(folder, file), true)) {
+        if (!ufs.delete(PathUtils.concatPath(folder, file), true)) {
           LOG.info("Failed to remove {}:{}", name, file);
           return false;
         }
@@ -59,39 +59,38 @@ public class Format {
 
     TachyonConf tachyonConf = new TachyonConf();
 
-    if (args[0].toUpperCase().equals("MASTER")) {
+    if ("MASTER".equals(args[0].toUpperCase())) {
 
       String masterJournal =
-          tachyonConf.get(Constants.MASTER_JOURNAL_FOLDER, Constants.DEFAULT_JOURNAL_FOLDER);
+          tachyonConf.get(Constants.MASTER_JOURNAL_FOLDER);
       if (!formatFolder("JOURNAL_FOLDER", masterJournal, tachyonConf)) {
         System.exit(-1);
       }
 
-      String tachyonHome = tachyonConf.get(Constants.TACHYON_HOME, Constants.DEFAULT_HOME);
-      String ufsAddress =
-          tachyonConf.get(Constants.UNDERFS_ADDRESS, tachyonHome + "/underFSStorage");
-      String ufsDataFolder =
-          tachyonConf.get(Constants.UNDERFS_DATA_FOLDER, ufsAddress + "/tachyon/data");
-      String ufsWorkerFolder =
-          tachyonConf.get(Constants.UNDERFS_WORKERS_FOLDER, ufsAddress + "/tachyon/workers");
-      if (!formatFolder("UNDERFS_DATA_FOLDER", ufsDataFolder, tachyonConf)
-          || !formatFolder("UNDERFS_WORKERS_FOLDER", ufsWorkerFolder, tachyonConf)) {
-        System.exit(-1);
+      String[] masterServiceNames = new String[] {
+          Constants.BLOCK_MASTER_SERVICE_NAME,
+          Constants.FILE_SYSTEM_MASTER_SERVICE_NAME,
+          Constants.RAW_TABLE_MASTER_SERVICE_NAME,
+      };
+      for (String masterServiceName : masterServiceNames) {
+        if (!formatFolder(masterServiceName + "JOURNAL_FOLDER", PathUtils.concatPath(masterJournal,
+            masterServiceName), tachyonConf)) {
+          System.exit(-1);
+        }
       }
 
       UnderFileSystemUtils.touch(
           masterJournal + Constants.FORMAT_FILE_PREFIX + System.currentTimeMillis(), tachyonConf);
-    } else if (args[0].toUpperCase().equals("WORKER")) {
-      String workerDataFolder =
-          tachyonConf.get(Constants.WORKER_DATA_FOLDER, Constants.DEFAULT_DATA_FOLDER);
-      int maxStorageLevels = tachyonConf.getInt(Constants.WORKER_MAX_TIERED_STORAGE_LEVEL, 1);
-      for (int level = 0; level < maxStorageLevels; level ++) {
+    } else if ("WORKER".equals(args[0].toUpperCase())) {
+      String workerDataFolder = tachyonConf.get(Constants.WORKER_DATA_FOLDER);
+      int storageLevels = tachyonConf.getInt(Constants.WORKER_TIERED_STORE_LEVELS);
+      for (int level = 0; level < storageLevels; level ++) {
         String tierLevelDirPath =
-            String.format(Constants.WORKER_TIERED_STORAGE_LEVEL_DIRS_PATH_FORMAT, level);
-        String[] dirPaths = tachyonConf.get(tierLevelDirPath, "/mnt/ramdisk").split(",");
+            String.format(Constants.WORKER_TIERED_STORE_LEVEL_DIRS_PATH_FORMAT, level);
+        String[] dirPaths = tachyonConf.get(tierLevelDirPath).split(",");
         String name = "TIER_" + level + "_DIR_PATH";
         for (String dirPath : dirPaths) {
-          String dirWorkerDataFolder = CommonUtils.concatPath(dirPath.trim(), workerDataFolder);
+          String dirWorkerDataFolder = PathUtils.concatPath(dirPath.trim(), workerDataFolder);
           UnderFileSystem ufs = UnderFileSystem.get(dirWorkerDataFolder, tachyonConf);
           if (ufs.exists(dirWorkerDataFolder)) {
             if (!formatFolder(name, dirWorkerDataFolder, tachyonConf)) {
@@ -105,4 +104,6 @@ public class Format {
       System.exit(-1);
     }
   }
+
+  private Format() {}  // Prevent instantiation.
 }

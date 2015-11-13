@@ -23,29 +23,30 @@ import java.util.List;
 
 import com.google.common.base.Supplier;
 
-import tachyon.TachyonURI;
-import tachyon.client.TachyonFS;
+import tachyon.client.file.TachyonFileSystem;
+import tachyon.client.file.TachyonFileSystem.TachyonFileSystemFactory;
 import tachyon.conf.TachyonConf;
 
 /**
- * Keeps a collection of all clients ({@link tachyon.client.TachyonFS}) returned. The main reason
- * for this is to build cleanup clients.
+ * Keeps a collection of all clients ({@link tachyon.client.file.TachyonFileSystem}) returned. The
+ * main reason for this is to build cleanup clients.
  */
 public final class ClientPool implements Closeable {
-  private final Supplier<String> mUriSuppliers;
+  private final List<TachyonFileSystem> mClients =
+      Collections.synchronizedList(new ArrayList<TachyonFileSystem>());
 
-  private final List<TachyonFS> mClients = Collections.synchronizedList(new ArrayList<TachyonFS>());
-
-  ClientPool(Supplier<String> uriSupplier) {
-    mUriSuppliers = uriSupplier;
-  }
+  ClientPool(Supplier<String> uriSupplier) {}
 
   /**
-   * Returns a {@link tachyon.client.TachyonFS} client. This client does not need to be closed
-   * directly, but can be closed by calling {@link #close()} on this object.
+   * Returns a {@link tachyon.client.file.TachyonFileSystem} client. This client does not need to be
+   * closed directly, but can be closed by calling {@link #close()} on this object.
+   *
+   * @param tachyonConf Tachyon configuration
+   * @return a TachyonFS client
+   * @throws IOException when the operation fails
    */
-  public TachyonFS getClient(TachyonConf tachyonConf) throws IOException {
-    final TachyonFS fs = TachyonFS.get(new TachyonURI(mUriSuppliers.get()), tachyonConf);
+  public TachyonFileSystem getClient(TachyonConf tachyonConf) throws IOException {
+    final TachyonFileSystem fs = TachyonFileSystemFactory.get();
     mClients.add(fs);
     return fs;
   }
@@ -53,10 +54,6 @@ public final class ClientPool implements Closeable {
   @Override
   public void close() throws IOException {
     synchronized (mClients) {
-      for (TachyonFS fs : mClients) {
-        fs.close();
-      }
-
       mClients.clear();
     }
   }

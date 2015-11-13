@@ -17,9 +17,6 @@ package tachyon.network.protocol;
 
 import java.util.List;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.google.common.base.Preconditions;
 import com.google.common.primitives.Longs;
 
@@ -29,14 +26,13 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.FileRegion;
 import io.netty.handler.codec.MessageToMessageEncoder;
 
-import tachyon.Constants;
 import tachyon.network.protocol.databuffer.DataBuffer;
 
 /**
  * Simple Netty encoder for RPCMessages.
  */
 @ChannelHandler.Sharable
-public class RPCMessageEncoder extends MessageToMessageEncoder<RPCMessage> {
+public final class RPCMessageEncoder extends MessageToMessageEncoder<RPCMessage> {
 
   @Override
   protected void encode(ChannelHandlerContext ctx, RPCMessage in, List<Object> out)

@@ -17,15 +17,19 @@ package tachyon.client.netty;
 
 import java.io.IOException;
 import java.util.HashSet;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Preconditions;
 
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 
 import tachyon.Constants;
+import tachyon.exception.ExceptionMessage;
 import tachyon.network.protocol.RPCMessage;
 import tachyon.network.protocol.RPCResponse;
 
@@ -40,20 +44,37 @@ public final class ClientHandler extends SimpleChannelInboundHandler<RPCMessage>
    * The interface for listeners to implement to receive callbacks when messages are received.
    */
   public interface ResponseListener {
-    /** This method will be called when a message is received on the client. */
+    /**
+     * This method will be called when a message is received on the client.
+     *
+     * @param response the RPC response
+     */
     void onResponseReceived(RPCResponse response);
   }
 
-  private final HashSet<ResponseListener> mListeners;
+  private final Set<ResponseListener> mListeners;
 
+  /**
+   * Creates a new <code>ClientHandler</code>.
+   */
   public ClientHandler() {
     mListeners = new HashSet<ResponseListener>(4);
   }
 
+  /**
+   * Adds a <code>ResponseListener</code> listener to the client handler.
+   *
+   * @param listener the listener to add
+   */
   public void addListener(ResponseListener listener) {
-    mListeners.add(listener);
+    mListeners.add(Preconditions.checkNotNull(listener));
   }
 
+  /**
+   * Removes a <code>ResponseListener</code> listener from the client handler.
+   *
+   * @param listener the listener to remove
+   */
   public void removeListener(ResponseListener listener) {
     mListeners.remove(listener);
   }
@@ -65,8 +86,7 @@ public final class ClientHandler extends SimpleChannelInboundHandler<RPCMessage>
       handleResponse(ctx, (RPCResponse) msg);
     } else {
       // The client should only receive RPCResponse messages.
-      throw new IllegalArgumentException("No handler implementation for rpc message type: "
-          + msg.getType());
+      throw new IllegalArgumentException(ExceptionMessage.NO_RPC_HANDLER.getMessage(msg.getType()));
     }
   }
 

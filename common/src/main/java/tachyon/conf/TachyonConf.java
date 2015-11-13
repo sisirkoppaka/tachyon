@@ -1,8 +1,22 @@
+/*
+ * Licensed to the University of California, Berkeley under one or more contributor license
+ * agreements. See the NOTICE file distributed with this work for additional information regarding
+ * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License. You may obtain a
+ * copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
 package tachyon.conf;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.InetSocketAddress;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
@@ -11,67 +25,61 @@ import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.google.common.base.Preconditions;
-
 import org.apache.commons.lang3.SerializationUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Splitter;
 import com.google.common.collect.Lists;
 
 import tachyon.Constants;
-import tachyon.util.CommonUtils;
-import tachyon.util.NetworkUtils;
+import tachyon.exception.ExceptionMessage;
+import tachyon.network.ChannelType;
+import tachyon.util.FormatUtils;
+import tachyon.util.network.NetworkAddressUtils;
 
 /**
  * <p>
- * Configuration of Tachyon. It sets various Tachyon parameters as key-value pairs. This class
- * contains all the runtime configuration properties. The default properties is stored in file
- * <code>tachyon-default.properties</code> and users can override these default properties by
- * modifying file <code>tachyon-site.properties</code>.
- * </p>
+ * All the runtime configuration properties of Tachyon. This class works like a dictionary and
+ * serves each Tachyon configuration property as a key-value pair.
+ *
  * <p>
- * User can create an instance of this class by <code>new TachyonConf()</code>, which will load
- * values from any Java system properties set as well.
- * </p>
+ * Tachyon configuration properties are loaded into this class in the following order with
+ * decreasing priority:
+ * <ol>
+ * <li>Java system properties;</li>
+ * <li>Environment variables via <code>tachyon-env.sh</code> or from OS settings;</li>
+ * <li>Site specific properties via <code>tachyon-site.properties</code> file;</li>
+ * <li>Default properties via <code>tachyon-default.properties</code> file.</li>
+ * </ol>
+ *
+ * <p>
+ * The default properties are defined in a property file <code>tachyon-default.properties</code>
+ * distributed with Tachyon jar. Tachyon users can override values of these default properties by
+ * creating <code>tachyon-site.properties</code> and putting it under java <code>CLASSPATH</code>
+ * when running Tachyon (e.g., ${TACHYON_HOME}/conf/)
+ *
+ * <p>
+ * Developers can create an instance of this class by <code>new TachyonConf()</code>, which will
+ * load values from any Java system properties set as well.
+ *
+ * <p>
  * The class only supports creation using <code>new TachyonConf(properties)</code> to override
  * default values.
  */
-public class TachyonConf {
+public final class TachyonConf {
   /** File to set default properties */
   public static final String DEFAULT_PROPERTIES = "tachyon-default.properties";
   /** File to set customized properties */
   public static final String SITE_PROPERTIES = "tachyon-site.properties";
   /** Regex string to find ${key} for variable substitution */
-  public static final String REGEX_STRING = "(\\$\\{([^{}]*)\\})";
+  private static final String REGEX_STRING = "(\\$\\{([^{}]*)\\})";
   /** Regex to find ${key} for variable substitution */
-  public static final Pattern CONF_REGEX = Pattern.compile(REGEX_STRING);
-
+  private static final Pattern CONF_REGEX = Pattern.compile(REGEX_STRING);
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
 
   private final Properties mProperties = new Properties();
-
-  public static void assertValidPort(final int port, TachyonConf tachyonConf) {
-    Preconditions.checkArgument(port < 65536, "Port must be less than 65536");
-
-    if (!tachyonConf.getBoolean(Constants.IN_TEST_MODE, false)) {
-      Preconditions.checkArgument(port > 0, "Port is only allowed to be zero in test mode.");
-    }
-  }
-
-  public static void assertValidPort(final InetSocketAddress address, TachyonConf tachyonConf) {
-    assertValidPort(address.getPort(), tachyonConf);
-  }
-
-  /**
-   * Copy constructor to merge the properties of the incoming <code>TachyonConf</code>.
-   *
-   * @param tachyonConf The source {@link tachyon.conf.TachyonConf} to be merged.
-   */
-  public TachyonConf(TachyonConf tachyonConf) {
-    merge(tachyonConf);
-  }
 
   /**
    * Overrides default properties.
@@ -106,32 +114,32 @@ public class TachyonConf {
 
   /**
    * Test constructor for TachyonConfTest class.
-   * 
-   * Here is the order of the sources to load the properties:
-   *   -) System properties if desired
-   *   -) Site specific properties via tachyon-site.properties file
-   *   -) Default properties via tachyon-default.properties file
    */
   TachyonConf(boolean includeSystemProperties) {
     // Load default
     Properties defaultProps = new Properties();
 
     // Override runtime default
-    defaultProps.setProperty(Constants.MASTER_HOSTNAME, NetworkUtils.getLocalHostName(250));
-    defaultProps.setProperty(Constants.WORKER_MIN_WORKER_THREADS,
+    defaultProps.setProperty(Constants.MASTER_HOSTNAME, NetworkAddressUtils.getLocalHostName(250));
+    defaultProps.setProperty(Constants.WORKER_WORKER_BLOCK_THREADS_MIN,
         String.valueOf(Runtime.getRuntime().availableProcessors()));
-    defaultProps.setProperty(Constants.MASTER_MIN_WORKER_THREADS,
+    defaultProps.setProperty(Constants.MASTER_WORKER_THREADS_MIN,
         String.valueOf(Runtime.getRuntime().availableProcessors()));
+    defaultProps.setProperty(Constants.WORKER_NETWORK_NETTY_CHANNEL,
+        String.valueOf(ChannelType.defaultType()));
+    defaultProps.setProperty(Constants.USER_NETWORK_NETTY_CHANNEL,
+        String.valueOf(ChannelType.defaultType()));
 
     InputStream defaultInputStream =
         TachyonConf.class.getClassLoader().getResourceAsStream(DEFAULT_PROPERTIES);
     if (defaultInputStream == null) {
-      throw new RuntimeException("The default Tachyon properties file does not exist.");
+      throw new RuntimeException(ExceptionMessage.DEFAULT_PROPERTIES_FILE_DOES_NOT_EXIST
+              .getMessage());
     }
     try {
       defaultProps.load(defaultInputStream);
     } catch (IOException e) {
-      throw new RuntimeException("Unable to load default Tachyon properties file.", e);
+      throw new RuntimeException(ExceptionMessage.UNABLE_TO_LOAD_PROPERTIES_FILE.getMessage(), e);
     }
 
     // Load site specific properties file
@@ -156,13 +164,13 @@ public class TachyonConf {
     mProperties.putAll(defaultProps);
     mProperties.putAll(siteProps);
     mProperties.putAll(systemProps);
-    
-    // Update tachyon.master_address
+
+    // Update tachyon.master_address based on if Zookeeper is used or not.
     String masterHostname = mProperties.getProperty(Constants.MASTER_HOSTNAME);
     String masterPort = mProperties.getProperty(Constants.MASTER_PORT);
-    boolean useZk = Boolean.parseBoolean(mProperties.getProperty(Constants.USE_ZOOKEEPER));
-    String masterAddress = (useZk ? Constants.HEADER_FT : Constants.HEADER) + masterHostname + ":"
-        + masterPort;
+    boolean useZk = Boolean.parseBoolean(mProperties.getProperty(Constants.ZOOKEEPER_ENABLED));
+    String masterAddress =
+        (useZk ? Constants.HEADER_FT : Constants.HEADER) + masterHostname + ":" + masterPort;
     mProperties.setProperty(Constants.MASTER_ADDRESS, masterAddress);
   }
 
@@ -176,19 +184,19 @@ public class TachyonConf {
   }
 
   @Override
-  public boolean equals(Object obj) {
-    if (this == obj) {
+  public boolean equals(Object o) {
+    if (this == o) {
       return true;
     }
-    if (obj instanceof TachyonConf) {
-      Properties props = ((TachyonConf) obj).getInternalProperties();
-      return mProperties.equals(props);
+    if (!(o instanceof TachyonConf)) {
+      return false;
     }
-    return false;
+    TachyonConf that = (TachyonConf) o;
+    return mProperties.equals(that.mProperties);
   }
 
   /**
-   * @return the deep copy of the internal <code>Properties</code> of this TachyonConf instance.
+   * @return the deep copy of the internal <code>Properties</code> of this TachyonConf instance
    */
   public Properties getInternalProperties() {
     return SerializationUtils.clone(mProperties);
@@ -198,7 +206,7 @@ public class TachyonConf {
    * Merge the current configuration properties with another one. A property from the new
    * configuration wins if it also appears in the current configuration.
    *
-   * @param alternateConf The source <code>TachyonConf</code> to be merged.
+   * @param alternateConf The source <code>TachyonConf</code> to be merged
    */
   public void merge(TachyonConf alternateConf) {
     if (alternateConf != null) {
@@ -209,34 +217,38 @@ public class TachyonConf {
 
   // Public accessor methods
 
+  // TODO(binfan): this method should be hidden and only used during initialization and tests.
   public void set(String key, String value) {
     mProperties.put(key, value);
   }
 
-  public String get(String key, final String defaultValue) {
-    String raw = mProperties.getProperty(key, defaultValue);
-    String updated = lookup(raw);
-    LOG.debug("Get Tachyon property {} as {} with default {}", key, updated, defaultValue);
-    return updated;
+  public String get(String key) {
+    if (!mProperties.containsKey(key)) {
+      // if key is not found among the default properties
+      throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
+    }
+    String raw = mProperties.getProperty(key);
+    return lookup(raw);
   }
 
   public boolean containsKey(String key) {
     return mProperties.containsKey(key);
   }
 
-  public int getInt(String key, final int defaultValue) {
+  public int getInt(String key) {
     if (mProperties.containsKey(key)) {
       String rawValue = mProperties.getProperty(key);
       try {
         return Integer.parseInt(lookup(rawValue));
       } catch (NumberFormatException e) {
-        LOG.warn("Configuration cannot evaluate key " + key + " as integer.");
+        throw new RuntimeException(ExceptionMessage.KEY_NOT_INTEGER.getMessage(key));
       }
     }
-    return defaultValue;
+    // if key is not found among the default properties
+    throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
   }
 
-  public long getLong(String key, final long defaultValue) {
+  public long getLong(String key) {
     if (mProperties.containsKey(key)) {
       String rawValue = mProperties.getProperty(key);
       try {
@@ -245,22 +257,24 @@ public class TachyonConf {
         LOG.warn("Configuration cannot evaluate key " + key + " as long.");
       }
     }
-    return defaultValue;
+    // if key is not found among the default properties
+    throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
   }
 
-  public double getDouble(String key, final double defaultValue) {
+  public double getDouble(String key) {
     if (mProperties.containsKey(key)) {
       String rawValue = mProperties.getProperty(key);
       try {
         return Double.parseDouble(lookup(rawValue));
       } catch (NumberFormatException e) {
-        LOG.warn("Configuration cannot evaluate key " + key + " as double.");
+        throw new RuntimeException(ExceptionMessage.KEY_NOT_DOUBLE.getMessage(key));
       }
     }
-    return defaultValue;
+    // if key is not found among the default properties
+    throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
   }
 
-  public float getFloat(String key, final float defaultValue) {
+  public float getFloat(String key) {
     if (mProperties.containsKey(key)) {
       String rawValue = mProperties.getProperty(key);
       try {
@@ -269,46 +283,52 @@ public class TachyonConf {
         LOG.warn("Configuration cannot evaluate key " + key + " as float.");
       }
     }
-    return defaultValue;
+    // if key is not found among the default properties
+    throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
   }
 
-  public boolean getBoolean(String key, boolean defaultValue) {
+  public boolean getBoolean(String key) {
     if (mProperties.containsKey(key)) {
       String rawValue = mProperties.getProperty(key);
       return Boolean.parseBoolean(lookup(rawValue));
     }
-    return defaultValue;
+    // if key is not found among the default properties
+    throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
   }
 
-  public List<String> getList(String key, String delimiter, List<String> defaultValue) {
-    if (delimiter == null) {
-      throw new IllegalArgumentException("Illegal separator for Tachyon properties as list");
-    }
+  public List<String> getList(String key, String delimiter) {
+    Preconditions.checkArgument(delimiter != null, "Illegal separator for Tachyon properties as "
+        + "list");
     if (mProperties.containsKey(key)) {
       String rawValue = mProperties.getProperty(key);
       return Lists.newLinkedList(Splitter.on(',').trimResults().omitEmptyStrings().split(rawValue));
     }
-    return defaultValue;
+    // if key is not found among the default properties
+    throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
   }
 
-  public <T extends Enum<T>> T getEnum(String key, T defaultValue) {
+  public <T extends Enum<T>> T getEnum(String key, Class<T> enumType) {
+    if (!mProperties.containsKey(key)) {
+      throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
+    }
+    final String val = get(key);
+    return Enum.valueOf(enumType, val);
+  }
+
+  public long getBytes(String key) {
     if (mProperties.containsKey(key)) {
-      final String val = get(key, defaultValue.toString());
-      return null == val ? defaultValue : Enum.valueOf(defaultValue.getDeclaringClass(), val);
+      String rawValue = get(key);
+      try {
+        return FormatUtils.parseSpaceSize(rawValue);
+      } catch (Exception ex) {
+        throw new RuntimeException(ExceptionMessage.KEY_NOT_BYTES.getMessage(key));
+      }
     }
-    return defaultValue;
+    throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
   }
 
-  public long getBytes(String key, long defaultValue) {
-    String rawValue = get(key, "");
-    try {
-      return CommonUtils.parseSpaceSize(rawValue);
-    } catch (Exception ex) {
-      return defaultValue;
-    }
-  }
-
-  public <T> Class<T> getClass(String key, Class<T> defaultValue) {
+  @SuppressWarnings("unchecked")
+  public <T> Class<T> getClass(String key) {
     if (mProperties.containsKey(key)) {
       String rawValue = mProperties.getProperty(key);
       try {
@@ -318,11 +338,12 @@ public class TachyonConf {
         LOG.error("{} : {} , {}", msg, rawValue, e);
       }
     }
-    return defaultValue;
+    // if key is not found among the default properties
+    throw new RuntimeException(ExceptionMessage.INVALID_CONFIGURATION_KEY.getMessage(key));
   }
 
   /**
-   * Return the properties as a Map.
+   * Returns the properties as a Map.
    *
    * @return a Map from each property name to its property values
    */
@@ -343,34 +364,35 @@ public class TachyonConf {
   /**
    * Lookup key names to handle ${key} stuff. Set as package private for testing.
    *
-   * @param base string to look for.
+   * @param base string to look for
    * @return the key name with the ${key} substituted
    */
-  String lookup(String base) {
-    return lookup(base, new HashMap<String, String>());
+  private String lookup(String base) {
+    return lookupRecursively(base, new HashMap<String, String>());
   }
 
   /**
    * Actual recursive lookup replacement.
    *
-   * @param base the String to look for.
-   * @param found {@link Map} of String that already seen in this path.
-   * @return resolved String value.
+   * @param base the String to look for
+   * @param found {@link Map} of String that already seen in this path
+   * @return resolved String value
    */
-  protected String lookup(final String base, Map<String, String> found) {
+  private String lookupRecursively(final String base, Map<String, String> found) {
     // check argument
     if (base == null) {
       return null;
     }
 
     String resolved = base;
-    // Lets find pattern match to ${key}. TODO: Consider using Apache Commons StrSubstitutor
+    // Lets find pattern match to ${key}.
+    // TODO(hsaputra): Consider using Apache Commons StrSubstitutor.
     Matcher matcher = CONF_REGEX.matcher(base);
     while (matcher.find()) {
       String match = matcher.group(2).trim();
       String value;
       if (!found.containsKey(match)) {
-        value = lookup(mProperties.getProperty(match), found);
+        value = lookupRecursively(mProperties.getProperty(match), found);
         found.put(match, value);
       } else {
         value = found.get(match);

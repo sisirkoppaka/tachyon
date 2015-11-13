@@ -2,16 +2,18 @@
   <parent>
     <artifactId>tachyon-parent</artifactId>
     <groupId>org.tachyonproject</groupId>
-    <version>0.7.2-SNAPSHOT</version>
+    <version>0.9.0-SNAPSHOT</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
 
   <artifactId>tachyon-minicluster</artifactId>
   <packaging>jar</packaging>
-  <name>Mock Tachyon Cluster</name>
-  <description>Mock Tachyon Cluster for testing</description>
+  <name>Tachyon MiniCluster</name>
+  <description>Tachyon MiniCluster for testing</description>
 
   <properties>
+    <!-- These need to be defined here as well as in the parent pom so that mvn can run
+         properly from sub-project directories -->
     <license.header.path>${project.parent.basedir}/build/license/</license.header.path>
     <checkstyle.path>${project.parent.basedir}/build/checkstyle/</checkstyle.path>
     <findbugs.path>${project.parent.basedir}/build/findbugs/</findbugs.path>

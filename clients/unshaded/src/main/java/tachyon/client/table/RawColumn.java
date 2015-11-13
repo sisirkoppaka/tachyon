@@ -19,9 +19,9 @@ import java.io.IOException;
 
 import tachyon.Constants;
 import tachyon.TachyonURI;
-import tachyon.client.TachyonFile;
 import tachyon.client.TachyonFS;
-import tachyon.util.CommonUtils;
+import tachyon.client.TachyonFile;
+import tachyon.util.io.PathUtils;
 
 /**
  * The column of a <code>RawTable</code>.
@@ -32,9 +32,11 @@ public class RawColumn {
   private final int mColumnIndex;
 
   /**
-   * @param tachyonClient
-   * @param rawTable
-   * @param columnIndex
+   * Creates a new <code>RawColumn</code>.
+   *
+   * @param tachyonClient the <code>TachyonFS</code> client
+   * @param rawTable the <code>RawTable</code> table this column belongs to
+   * @param columnIndex the column index
    */
   RawColumn(TachyonFS tachyonClient, RawTable rawTable, int columnIndex) {
     mTachyonFS = tachyonClient;
@@ -42,31 +44,72 @@ public class RawColumn {
     mColumnIndex = columnIndex;
   }
 
-  // TODO creating file here should be based on id.
+  /**
+   * @param tablePath path of the table
+   * @param columnIndex column ID
+   * @return path of the column
+   */
+  public static String getColumnPath(String tablePath, int columnIndex) {
+    return PathUtils.concatPath(tablePath, Constants.MASTER_COLUMN_FILE_PREFIX + columnIndex);
+  }
+
+  /**
+   * Creates a new column partition.
+   *
+   * TODO(hy): Creating file here should be based on id.
+   *
+   * @param pId the partition id
+   * @return whether operation succeeded
+   * @throws IOException when the partition the path is invalid or points to an existing object
+   */
   public boolean createPartition(int pId) throws IOException {
-    TachyonURI tUri =
-        new TachyonURI(CommonUtils.concatPath(mRawTable.getPath(),
-            Constants.MASTER_COLUMN_FILE_PREFIX + mColumnIndex, pId));
+    TachyonURI tUri = new TachyonURI(PathUtils.concatPath(getColumnPath(mRawTable.getPath(),
+        mColumnIndex), pId));
     return mTachyonFS.createFile(tUri) > 0;
   }
 
-  // TODO creating file here should be based on id.
+  /**
+   * Gets an existing partition.
+   *
+   * TODO(hy): Creating file here should be based on id.
+   *
+   * @param pId the partition id
+   * @return <code>TachyonFile</code> with the given partition
+   * @throws IOException when the partition the path is invalid or points to a non-existing object
+   */
   public TachyonFile getPartition(int pId) throws IOException {
     return getPartition(pId, false);
   }
 
-  // TODO creating file here should be based on id.
+  /**
+   * Gets an existing partition.
+   *
+   * TODO(hy): Creating file here should be based on id.
+   *
+   * @param pId the partition id
+   * @param cachedMetadata whether to use the file metadata cache
+   * @return <code>TachyonFile</code> with the given partition
+   * @throws IOException when the partition the path is invalid or points to a non-existing object
+   */
   public TachyonFile getPartition(int pId, boolean cachedMetadata) throws IOException {
     TachyonURI tUri =
-        new TachyonURI(CommonUtils.concatPath(mRawTable.getPath(),
+        new TachyonURI(PathUtils.concatPath(mRawTable.getPath(),
             Constants.MASTER_COLUMN_FILE_PREFIX + mColumnIndex, pId));
     return mTachyonFS.getFile(tUri, cachedMetadata);
   }
 
-  // TODO creating file here should be based on id.
+  /**
+   * Identifies the number of column partitions.
+   *
+   * TODO(hy): Creating file here should be based on id.
+   *
+   * @return the number of column partitions
+   * @throws IOException when any of the partition paths is invalid or points to a non-existing
+   *         object
+   */
   public int partitions() throws IOException {
     TachyonURI tUri =
-        new TachyonURI(CommonUtils.concatPath(mRawTable.getPath(),
+        new TachyonURI(PathUtils.concatPath(mRawTable.getPath(),
             Constants.MASTER_COLUMN_FILE_PREFIX + mColumnIndex));
     return mTachyonFS.listStatus(tUri).size();
   }

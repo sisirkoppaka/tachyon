@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -26,93 +26,93 @@ import org.slf4j.LoggerFactory;
 import tachyon.Constants;
 import tachyon.TachyonURI;
 import tachyon.Version;
-import tachyon.client.OutStream;
-import tachyon.client.TachyonByteBuffer;
-import tachyon.client.TachyonFile;
-import tachyon.client.TachyonFS;
+import tachyon.client.ClientContext;
+import tachyon.client.ReadType;
 import tachyon.client.WriteType;
+import tachyon.client.file.FileInStream;
+import tachyon.client.file.FileOutStream;
+import tachyon.client.file.TachyonFile;
+import tachyon.client.file.TachyonFileSystem;
+import tachyon.client.file.options.InStreamOptions;
+import tachyon.client.file.options.OutStreamOptions;
 import tachyon.conf.TachyonConf;
+import tachyon.exception.TachyonException;
 import tachyon.util.CommonUtils;
+import tachyon.util.FormatUtils;
 
 public class BasicOperations implements Callable<Boolean> {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
-
   private final TachyonURI mMasterLocation;
   private final TachyonURI mFilePath;
-  private final WriteType mWriteType;
+  private final InStreamOptions mReadOptions;
+  private final OutStreamOptions mWriteOptions;
   private final int mNumbers = 20;
 
-  public BasicOperations(TachyonURI masterLocation, TachyonURI filePath, WriteType writeType) {
+  public BasicOperations(TachyonURI masterLocation, TachyonURI filePath, ReadType readType,
+      WriteType writeType) {
     mMasterLocation = masterLocation;
     mFilePath = filePath;
-    mWriteType = writeType;
+    mReadOptions =
+        new InStreamOptions.Builder(ClientContext.getConf()).setReadType(readType).build();
+    mWriteOptions =
+        new OutStreamOptions.Builder(ClientContext.getConf()).setWriteType(writeType).build();
   }
 
   @Override
   public Boolean call() throws Exception {
-    TachyonFS tachyonClient = TachyonFS.get(mMasterLocation, new TachyonConf());
-    createFile(tachyonClient);
-    writeFile(tachyonClient);
-    return readFile(tachyonClient);
+    TachyonConf tachyonConf = ClientContext.getConf();
+    tachyonConf.set(Constants.MASTER_HOSTNAME, mMasterLocation.getHost());
+    tachyonConf.set(Constants.MASTER_PORT, Integer.toString(mMasterLocation.getPort()));
+    ClientContext.reset(tachyonConf);
+    TachyonFileSystem tFS = TachyonFileSystem.TachyonFileSystemFactory.get();
+    writeFile(tFS);
+    return readFile(tFS);
   }
 
-  private void createFile(TachyonFS tachyonClient) throws IOException {
-    LOG.debug("Creating file...");
-    long startTimeMs = CommonUtils.getCurrentMs();
-    int fileId = tachyonClient.createFile(mFilePath);
-    CommonUtils.printTimeTakenMs(startTimeMs, LOG, "createFile with fileId " + fileId);
-  }
-
-  private void writeFile(TachyonFS tachyonClient) throws IOException {
+  private void writeFile(TachyonFileSystem tachyonFileSystem)
+    throws IOException, TachyonException {
     ByteBuffer buf = ByteBuffer.allocate(mNumbers * 4);
     buf.order(ByteOrder.nativeOrder());
     for (int k = 0; k < mNumbers; k ++) {
       buf.putInt(k);
     }
-
-    buf.flip();
     LOG.debug("Writing data...");
-    buf.flip();
-
     long startTimeMs = CommonUtils.getCurrentMs();
-    TachyonFile file = tachyonClient.getFile(mFilePath);
-    OutStream os = file.getOutStream(mWriteType);
+    FileOutStream os = tachyonFileSystem.getOutStream(mFilePath, mWriteOptions);
     os.write(buf.array());
     os.close();
 
-    CommonUtils.printTimeTakenMs(startTimeMs, LOG, "writeFile to file " + mFilePath);
+    LOG.info(FormatUtils.formatTimeTakenMs(startTimeMs, "writeFile to file " + mFilePath));
   }
 
-  private boolean readFile(TachyonFS tachyonClient) throws IOException {
+  private boolean readFile(TachyonFileSystem tachyonFileSystem)
+      throws IOException, TachyonException {
     boolean pass = true;
     LOG.debug("Reading data...");
-
+    TachyonFile file = tachyonFileSystem.open(mFilePath);
     final long startTimeMs = CommonUtils.getCurrentMs();
-    TachyonFile file = tachyonClient.getFile(mFilePath);
-    TachyonByteBuffer buf = file.readByteBuffer(0);
-    if (buf == null) {
-      file.recache();
-      buf = file.readByteBuffer(0);
-    }
-    buf.mData.order(ByteOrder.nativeOrder());
+    FileInStream is = tachyonFileSystem.getInStream(file, mReadOptions);
+    ByteBuffer buf = ByteBuffer.allocate((int) is.remaining());
+    is.read(buf.array());
+    buf.order(ByteOrder.nativeOrder());
     for (int k = 0; k < mNumbers; k ++) {
-      pass = pass && (buf.mData.getInt() == k);
+      pass = pass && (buf.getInt() == k);
     }
-    buf.close();
+    is.close();
 
-    CommonUtils.printTimeTakenMs(startTimeMs, LOG, "readFile file " + mFilePath);
+    LOG.info(FormatUtils.formatTimeTakenMs(startTimeMs, "readFile file " + mFilePath));
     return pass;
   }
 
   public static void main(String[] args) throws IllegalArgumentException {
-    if (args.length != 3) {
-      System.out.println("java -cp target/tachyon-" + Version.VERSION
-          + "-jar-with-dependencies.jar "
-          + "tachyon.examples.BasicOperations <TachyonMasterAddress> <FilePath> <WriteType>");
+    if (args.length != 4) {
+      System.out.println("java -cp " + Version.TACHYON_JAR + " " + BasicOperations.class.getName()
+          + " <ReadType (CACHE_PROMOTE | CACHE | NO_CACHE)> <WriteType (MUST_CACHE | CACHE_THROUGH"
+          + " | THROUGH)>");
       System.exit(-1);
     }
 
     Utils.runExample(new BasicOperations(new TachyonURI(args[0]), new TachyonURI(args[1]),
-        WriteType.valueOf(args[2])));
+        ReadType.valueOf(args[2]), WriteType.valueOf(args[3])));
   }
 }

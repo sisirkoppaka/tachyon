@@ -27,24 +27,26 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Sets;
 import com.google.common.primitives.Ints;
 
-import tachyon.Constants;
-import tachyon.TestUtils;
-import tachyon.conf.TachyonConf;
+import tachyon.exception.BlockAlreadyExistsException;
+import tachyon.exception.BlockDoesNotExistException;
+import tachyon.exception.ExceptionMessage;
+import tachyon.exception.InvalidWorkerStateException;
+import tachyon.exception.WorkerOutOfSpaceException;
+import tachyon.util.io.BufferUtils;
 import tachyon.worker.block.BlockStoreLocation;
+import tachyon.worker.block.TieredBlockStoreTestUtils;
 
-public class StorageDirTest {
-  private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
-  private static final long TEST_USER_ID = 2;
+public final class StorageDirTest {
+  private static final long TEST_SESSION_ID = 2;
   private static final long TEST_BLOCK_ID = 9;
   private static final long TEST_BLOCK_SIZE = 20;
   private static final long TEST_TEMP_BLOCK_ID = 10;
   private static final long TEST_TEMP_BLOCK_SIZE = 30;
+  private static final int TEST_TIER_ORDINAL = 0;
   private static final int TEST_DIR_INDEX = 1;
   private static final long TEST_DIR_CAPACITY = 1000;
   private String mTestDirPath;
@@ -60,23 +62,23 @@ public class StorageDirTest {
   public TemporaryFolder mFolder = new TemporaryFolder();
 
   @Before
-  public void before() throws IOException {
+  public void before() throws Exception {
     // Creates a dummy test dir under mTestDirPath with 1 byte space so initialization can occur
     mTestDirPath = mFolder.newFolder().getAbsolutePath();
-    TachyonConf tachyonConf = new TachyonConf();
-    tachyonConf.set("tachyon.worker.tieredstore.level0.dirs.path", mFolder.newFolder()
-        .getAbsolutePath());
-    tachyonConf.set("tachyon.worker.tieredstore.level0.dirs.quota", "1b");
-    tachyonConf.set(Constants.WORKER_DATA_FOLDER, "");
+    String[] testDirPaths = {mTestDirPath};
+    long[] testDirCapacity = {1};
 
-    mTier = StorageTier.newStorageTier(tachyonConf, 0 /* level */);
+    TieredBlockStoreTestUtils.setupTachyonConfWithSingleTier(null, TEST_TIER_ORDINAL, "MEM",
+        testDirPaths, testDirCapacity, "");
+
+    mTier = StorageTier.newStorageTier("MEM");
     mDir = StorageDir.newStorageDir(mTier, TEST_DIR_INDEX, TEST_DIR_CAPACITY, mTestDirPath);
     mBlockMeta = new BlockMeta(TEST_BLOCK_ID, TEST_BLOCK_SIZE, mDir);
     mTempBlockMeta =
-        new TempBlockMeta(TEST_USER_ID, TEST_TEMP_BLOCK_ID, TEST_TEMP_BLOCK_SIZE, mDir);
+        new TempBlockMeta(TEST_SESSION_ID, TEST_TEMP_BLOCK_ID, TEST_TEMP_BLOCK_SIZE, mDir);
   }
 
-  private StorageDir newStorageDir(File testDir) throws IOException {
+  private StorageDir newStorageDir(File testDir) throws Exception {
     return StorageDir.newStorageDir(mTier, TEST_DIR_INDEX, TEST_DIR_CAPACITY,
         testDir.getAbsolutePath());
   }
@@ -84,12 +86,12 @@ public class StorageDirTest {
   private void newBlockFile(File dir, String name, int lenBytes) throws IOException {
     File block = new File(dir, name);
     block.createNewFile();
-    byte[] data = TestUtils.getIncreasingByteArray(lenBytes);
-    TestUtils.writeBufferToFile(block.getAbsolutePath(), data);
+    byte[] data = BufferUtils.getIncreasingByteArray(lenBytes);
+    BufferUtils.writeBufferToFile(block.getAbsolutePath(), data);
   }
 
   @Test
-  public void initializeMetaNoExceptionTest() throws IOException {
+  public void initializeMetaNoExceptionTest() throws Exception {
     File testDir = mFolder.newFolder();
 
     int nBlock = 10;
@@ -122,7 +124,7 @@ public class StorageDirTest {
   }
 
   @Test
-  public void initializeMetaDeleteInappropriateFileTest() throws IOException {
+  public void initializeMetaDeleteInappropriateFileTest() throws Exception {
     File testDir = mFolder.newFolder();
 
     newBlockFile(testDir, "block", 1);
@@ -132,7 +134,7 @@ public class StorageDirTest {
   }
 
   @Test
-  public void initializeMetaDeleteInappropriateDirTest() throws IOException {
+  public void initializeMetaDeleteInappropriateDirTest() throws Exception {
     File testDir = mFolder.newFolder();
 
     File newDir = new File(testDir, "dir");
@@ -144,13 +146,14 @@ public class StorageDirTest {
   }
 
   @Test
-  public void initializeMetaBlockLargerThanCapacityTest() throws IOException {
+  public void initializeMetaBlockLargerThanCapacityTest() throws Exception {
     File testDir = mFolder.newFolder();
 
     newBlockFile(testDir, String.valueOf(TEST_BLOCK_ID), Ints.checkedCast(TEST_DIR_CAPACITY + 1));
-
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to add BlockMeta");
+    String alias = "MEM";
+    mThrown.expect(WorkerOutOfSpaceException.class);
+    mThrown.expectMessage(ExceptionMessage.NO_SPACE_FOR_BLOCK_META.getMessage(TEST_BLOCK_ID,
+        TEST_DIR_CAPACITY + 1, TEST_DIR_CAPACITY, alias));
     mDir = newStorageDir(testDir);
     assertMetadataEmpty(mDir, TEST_DIR_CAPACITY);
     // assert file not deleted
@@ -160,7 +163,7 @@ public class StorageDirTest {
   }
 
   @Test
-  public void getBytesTest() throws IOException {
+  public void getBytesTest() throws Exception {
     // Initial state
     Assert.assertEquals(TEST_DIR_CAPACITY, mDir.getCapacityBytes());
     Assert.assertEquals(TEST_DIR_CAPACITY, mDir.getAvailableBytes());
@@ -208,7 +211,7 @@ public class StorageDirTest {
   }
 
   @Test
-  public void getBlockIdsTest() throws IOException {
+  public void getBlockIdsTest() throws Exception {
     long blockId1 = TEST_BLOCK_ID + 1;
     long blockId2 = TEST_BLOCK_ID + 2;
 
@@ -222,7 +225,7 @@ public class StorageDirTest {
   }
 
   @Test
-  public void getBlocksTest() throws IOException {
+  public void getBlocksTest() throws Exception {
     long blockId1 = TEST_BLOCK_ID + 1;
     long blockId2 = TEST_BLOCK_ID + 2;
 
@@ -236,89 +239,91 @@ public class StorageDirTest {
   }
 
   @Test
-  public void addBlockMetaTooBigTest() throws IOException {
+  public void addBlockMetaTooBigTest() throws Exception {
     final long bigBlockSize = TEST_DIR_CAPACITY + 1;
     BlockMeta bigBlockMeta = new BlockMeta(TEST_BLOCK_ID, bigBlockSize, mDir);
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to add BlockMeta: blockId " + TEST_BLOCK_ID + " is "
-        + bigBlockSize + " bytes, but only " + TEST_DIR_CAPACITY + " bytes available");
+    String alias = bigBlockMeta.getBlockLocation().tierAlias();
+    mThrown.expect(WorkerOutOfSpaceException.class);
+    mThrown.expectMessage(ExceptionMessage.NO_SPACE_FOR_BLOCK_META.getMessage(TEST_BLOCK_ID,
+        bigBlockSize, TEST_DIR_CAPACITY, alias));
     mDir.addBlockMeta(bigBlockMeta);
   }
 
   @Test
-  public void addBlockMetaExistingTest() throws IOException {
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to add BlockMeta: blockId " + TEST_BLOCK_ID + " exists");
+  public void addBlockMetaExistingTest() throws Exception {
+    mThrown.expect(BlockAlreadyExistsException.class);
+    mThrown.expectMessage(ExceptionMessage.ADD_EXISTING_BLOCK.getMessage(TEST_BLOCK_ID, "MEM"));
     mDir.addBlockMeta(mBlockMeta);
     BlockMeta dupBlockMeta = new BlockMeta(TEST_BLOCK_ID, TEST_BLOCK_SIZE, mDir);
     mDir.addBlockMeta(dupBlockMeta);
   }
 
   @Test
-  public void removeBlockMetaNotExistingTest() throws IOException {
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to remove BlockMeta: blockId " + TEST_BLOCK_ID + " not found");
+  public void removeBlockMetaNotExistingTest() throws Exception {
+    mThrown.expect(BlockDoesNotExistException.class);
+    mThrown.expectMessage(ExceptionMessage.BLOCK_META_NOT_FOUND.getMessage(TEST_BLOCK_ID));
     mDir.removeBlockMeta(mBlockMeta);
   }
 
   @Test
-  public void getBlockMetaNotExistingTest() throws IOException {
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to get BlockMeta: blockId " + TEST_BLOCK_ID + " not found in ");
+  public void getBlockMetaNotExistingTest() throws Exception {
+    mThrown.expect(BlockDoesNotExistException.class);
+    mThrown.expectMessage(ExceptionMessage.BLOCK_META_NOT_FOUND.getMessage(TEST_BLOCK_ID));
     mDir.getBlockMeta(TEST_BLOCK_ID);
   }
 
   @Test
-  public void addTempBlockMetaTooBigTest() throws IOException {
+  public void addTempBlockMetaTooBigTest() throws Exception {
     final long bigBlockSize = TEST_DIR_CAPACITY + 1;
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to add TempBlockMeta: blockId " + TEST_TEMP_BLOCK_ID + " is "
-        + bigBlockSize + " bytes, but only " + TEST_DIR_CAPACITY + " bytes available");
     TempBlockMeta bigTempBlockMeta =
-        new TempBlockMeta(TEST_USER_ID, TEST_TEMP_BLOCK_ID, bigBlockSize, mDir);
+        new TempBlockMeta(TEST_SESSION_ID, TEST_TEMP_BLOCK_ID, bigBlockSize, mDir);
+    String alias = bigTempBlockMeta.getBlockLocation().tierAlias();
+    mThrown.expect(WorkerOutOfSpaceException.class);
+    mThrown.expectMessage(ExceptionMessage.NO_SPACE_FOR_BLOCK_META.getMessage(TEST_TEMP_BLOCK_ID,
+        bigBlockSize, TEST_DIR_CAPACITY, alias));
     mDir.addTempBlockMeta(bigTempBlockMeta);
   }
 
   @Test
-  public void addTempBlockMetaExistingTest() throws IOException {
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to add TempBlockMeta: blockId " + TEST_TEMP_BLOCK_ID + " exists");
+  public void addTempBlockMetaExistingTest() throws Exception {
+    mThrown.expect(BlockAlreadyExistsException.class);
+    mThrown
+        .expectMessage(ExceptionMessage.ADD_EXISTING_BLOCK.getMessage(TEST_TEMP_BLOCK_ID, "MEM"));
     mDir.addTempBlockMeta(mTempBlockMeta);
     TempBlockMeta dupTempBlockMeta =
-        new TempBlockMeta(TEST_USER_ID, TEST_TEMP_BLOCK_ID, TEST_TEMP_BLOCK_SIZE, mDir);
+        new TempBlockMeta(TEST_SESSION_ID, TEST_TEMP_BLOCK_ID, TEST_TEMP_BLOCK_SIZE, mDir);
     mDir.addTempBlockMeta(dupTempBlockMeta);
   }
 
   @Test
-  public void removeTempBlockMetaNotExistingTest() throws IOException {
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to remove TempBlockMeta: blockId " + TEST_TEMP_BLOCK_ID + " not "
-        + "found");
+  public void removeTempBlockMetaNotExistingTest() throws Exception {
+    mThrown.expect(BlockDoesNotExistException.class);
+    mThrown.expectMessage(ExceptionMessage.BLOCK_META_NOT_FOUND.getMessage(TEST_TEMP_BLOCK_ID));
     mDir.removeTempBlockMeta(mTempBlockMeta);
   }
 
   @Test
-  public void removeTempBlockMetaNotOwnerTest() throws IOException {
-    final long wrongUserId = TEST_USER_ID + 1;
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to remove TempBlockMeta: blockId " + TEST_TEMP_BLOCK_ID
-        + " has userId " + wrongUserId + " not found");
+  public void removeTempBlockMetaNotOwnerTest() throws Exception {
+    final long wrongSessionId = TEST_SESSION_ID + 1;
+    String alias = "MEM";
+    mThrown.expect(BlockDoesNotExistException.class);
+    mThrown.expectMessage(ExceptionMessage.BLOCK_NOT_FOUND_FOR_SESSION
+        .getMessage(TEST_TEMP_BLOCK_ID, alias, wrongSessionId));
     mDir.addTempBlockMeta(mTempBlockMeta);
     TempBlockMeta wrongTempBlockMeta =
-        new TempBlockMeta(wrongUserId, TEST_TEMP_BLOCK_ID, TEST_TEMP_BLOCK_SIZE, mDir);
+        new TempBlockMeta(wrongSessionId, TEST_TEMP_BLOCK_ID, TEST_TEMP_BLOCK_SIZE, mDir);
     mDir.removeTempBlockMeta(wrongTempBlockMeta);
   }
 
   @Test
-  public void getTempBlockMetaNotExistingTest() throws IOException {
-    mThrown.expect(IOException.class);
-    mThrown.expectMessage("Failed to get BlockMeta: blockId " + TEST_TEMP_BLOCK_ID
-        + " not found in ");
+  public void getTempBlockMetaNotExistingTest() throws Exception {
+    mThrown.expect(BlockDoesNotExistException.class);
+    mThrown.expectMessage(ExceptionMessage.BLOCK_META_NOT_FOUND.getMessage(TEST_TEMP_BLOCK_ID));
     mDir.getBlockMeta(TEST_TEMP_BLOCK_ID);
   }
 
   @Test
-  public void blockMetaTest() throws IOException {
+  public void blockMetaTest() throws Exception {
     Assert.assertFalse(mDir.hasBlockMeta(TEST_BLOCK_ID));
     Assert.assertEquals(TEST_DIR_CAPACITY, mDir.getAvailableBytes());
 
@@ -333,7 +338,7 @@ public class StorageDirTest {
   }
 
   @Test
-  public void tempBlockMetaTest() throws IOException {
+  public void tempBlockMetaTest() throws Exception {
     Assert.assertFalse(mDir.hasTempBlockMeta(TEST_TEMP_BLOCK_ID));
     Assert.assertEquals(TEST_DIR_CAPACITY, mDir.getAvailableBytes());
 
@@ -347,7 +352,6 @@ public class StorageDirTest {
     Assert.assertEquals(TEST_DIR_CAPACITY, mDir.getAvailableBytes());
   }
 
-
   @Test
   public void resizeTempBlockMetaTest() throws Exception {
     mDir.addTempBlockMeta(mTempBlockMeta);
@@ -357,30 +361,56 @@ public class StorageDirTest {
     Assert.assertEquals(TEST_DIR_CAPACITY - newSize, mDir.getAvailableBytes());
   }
 
-  // TODO: also test claimed space
   @Test
-  public void cleanupUserTest() throws Exception {
-    // Create blocks under TEST_USER_ID
+  public void resizeTempBlockMetaInvalidStateExceptionTest() throws Exception {
+    mDir.addTempBlockMeta(mTempBlockMeta);
+    final long newSize = TEST_TEMP_BLOCK_SIZE - 10;
+    try {
+      mDir.resizeTempBlockMeta(mTempBlockMeta, newSize);
+      Assert.fail("Should throw an Exception when newSize is smaller than oldSize");
+    } catch (Exception e) {
+      Assert.assertTrue(e instanceof InvalidWorkerStateException);
+      Assert.assertTrue(e.getMessage().equals("Shrinking block, not supported!"));
+      Assert.assertEquals(TEST_TEMP_BLOCK_SIZE, mTempBlockMeta.getBlockSize());
+    }
+  }
+
+  @Test
+  public void resizeTempBlockMetaNoAvailableBytesTest() throws Exception {
+    mDir.addTempBlockMeta(mTempBlockMeta);
+    // resize the temp block size to the dir capacity, which is the limit
+    mDir.resizeTempBlockMeta(mTempBlockMeta, TEST_DIR_CAPACITY);
+    Assert.assertEquals(TEST_DIR_CAPACITY, mTempBlockMeta.getBlockSize());
+    mThrown.expect(IllegalStateException.class);
+    mThrown.expectMessage("Available bytes should always be non-negative");
+    // resize again, now the newSize is more than available bytes, exception thrown
+    mDir.resizeTempBlockMeta(mTempBlockMeta, TEST_DIR_CAPACITY + 1);
+  }
+
+  // TODO(bin): Also test claimed space.
+  @Test
+  public void cleanupSessionTest() throws Exception {
+    // Create blocks under TEST_SESSION_ID
     mDir.addBlockMeta(mBlockMeta);
 
-    // Create temp blocks under TEST_USER_ID
+    // Create temp blocks under TEST_SESSION_ID
     long tempBlockId1 = TEST_TEMP_BLOCK_ID + 1;
     long tempBlockId2 = TEST_TEMP_BLOCK_ID + 2;
     long tempBlockId3 = TEST_TEMP_BLOCK_ID + 3;
-    long otherUserId = TEST_USER_ID + 1;
+    long otherSessionId = TEST_SESSION_ID + 1;
 
     TempBlockMeta tempBlockMeta1 =
-        new TempBlockMeta(TEST_USER_ID, tempBlockId1, TEST_TEMP_BLOCK_SIZE, mDir);
+        new TempBlockMeta(TEST_SESSION_ID, tempBlockId1, TEST_TEMP_BLOCK_SIZE, mDir);
     TempBlockMeta tempBlockMeta2 =
-        new TempBlockMeta(TEST_USER_ID, tempBlockId2, TEST_TEMP_BLOCK_SIZE, mDir);
+        new TempBlockMeta(TEST_SESSION_ID, tempBlockId2, TEST_TEMP_BLOCK_SIZE, mDir);
     TempBlockMeta tempBlockMeta3 =
-        new TempBlockMeta(otherUserId, tempBlockId3, TEST_TEMP_BLOCK_SIZE, mDir);
+        new TempBlockMeta(otherSessionId, tempBlockId3, TEST_TEMP_BLOCK_SIZE, mDir);
     mDir.addTempBlockMeta(tempBlockMeta1);
     mDir.addTempBlockMeta(tempBlockMeta2);
     mDir.addTempBlockMeta(tempBlockMeta3);
 
-    // Check the temporary blocks belonging to TEST_USER_ID
-    List<TempBlockMeta> actual = mDir.getUserTempBlocks(TEST_USER_ID);
+    // Check the temporary blocks belonging to TEST_SESSION_ID
+    List<TempBlockMeta> actual = mDir.getSessionTempBlocks(TEST_SESSION_ID);
     List<Long> actualBlockIds = new ArrayList<Long>(actual.size());
     for (TempBlockMeta tempBlockMeta : actual) {
       actualBlockIds.add(tempBlockMeta.getBlockId());
@@ -390,21 +420,20 @@ public class StorageDirTest {
     Assert.assertTrue(mDir.hasTempBlockMeta(tempBlockId1));
     Assert.assertTrue(mDir.hasTempBlockMeta(tempBlockId2));
 
-    // Two temp blocks created by TEST_USER_ID are expected to be removed
-    mDir.cleanupUserTempBlocks(TEST_USER_ID, actualBlockIds);
+    // Two temp blocks created by TEST_SESSION_ID are expected to be removed
+    mDir.cleanupSessionTempBlocks(TEST_SESSION_ID, actualBlockIds);
     Assert.assertFalse(mDir.hasTempBlockMeta(tempBlockId1));
     Assert.assertFalse(mDir.hasTempBlockMeta(tempBlockId2));
-    // Temp block created by otherUserId is expected to stay
+    // Temp block created by otherSessionId is expected to stay
     Assert.assertTrue(mDir.hasTempBlockMeta(tempBlockId3));
-    // Block created by TEST_USER_ID is expected to stay
+    // Block created by TEST_SESSION_ID is expected to stay
     Assert.assertTrue(mDir.hasBlockMeta(TEST_BLOCK_ID));
   }
 
   @Test
   public void toBlockStoreLocationTest() {
     StorageTier tier = mDir.getParentTier();
-    Assert.assertEquals(
-        new BlockStoreLocation(tier.getTierAlias(), tier.getTierLevel(), mDir.getDirIndex()),
+    Assert.assertEquals(new BlockStoreLocation(tier.getTierAlias(), mDir.getDirIndex()),
         mDir.toBlockStoreLocation());
   }
 }

@@ -22,15 +22,17 @@ import tachyon.conf.TachyonConf;
 public class SwiftUnderFileSystemUtils {
 
   /**
-   * Replace default key with user provided key 
-   * @param conf
-   * @param key
+   * Replaces default key with user provided key.
+   *
+   * @param conf the Hadoop configuration
+   * @param tachyonConf the Tachyon configuration
+   * @param key the key to add
    */
   public static void addKey(Configuration conf, TachyonConf tachyonConf, String key) {
     if (System.getProperty(key) != null && conf.get(key) == null) {
       conf.set(key, System.getProperty(key));
     } else if (tachyonConf.containsKey(key)) {
-      conf.set(key, tachyonConf.get(key, null));
+      conf.set(key, tachyonConf.get(key));
     }
   }
 }

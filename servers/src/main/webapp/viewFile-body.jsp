@@ -54,22 +54,33 @@
     <hr>
     <% if (request.getAttribute("fileBlocks") != null) { %>
       <div>
-        <h5>Detailed blocks information (block capacity is <%= request.getAttribute("blockSizeByte") %> Bytes):</h5>
+        <h5>Detailed blocks information (block capacity is <%= request.getAttribute("blockSizeBytes") %> Bytes):</h5>
         <table class="table table-bordered table-striped">
           <tr>
             <th>ID</th>
             <th>Size (Byte)</th>
-            <th>In Memory</th>
+            <th>In <%= request.getAttribute("highestTierAlias") %></th>
+            <th>Locations</th>
           </tr>
-          <% for (UiBlockInfo blockInfo : ((List<UiBlockInfo>) request.getAttribute("fileBlocks"))) { %>
+          <% for (UiBlockInfo masterBlockInfo : ((List<UiBlockInfo>) request.getAttribute("fileBlocks"))) { %>
             <tr>
-              <td><%= blockInfo.getID() %></td>
-              <td><%= blockInfo.getBlockLength() %></td>
+              <td><%= masterBlockInfo.getID() %></td>
+              <td><%= masterBlockInfo.getBlockLength() %></td>
               <td>
-                <% if(blockInfo.inMemory()) { %>
+                <% if (masterBlockInfo.isInTier((String) request.getAttribute("highestTierAlias"))) { %>
                   Yes
                 <% } else { %>
                   No
+                <% } %>
+              </td>
+              <td>
+                <% Iterator<String> iterator = masterBlockInfo.getLocations().iterator(); %>
+                <% while (iterator.hasNext()) { %>
+                    <% String location = iterator.next(); %>
+                    <a href="http://<%= location %>:<%= request.getAttribute("workerWebPort") %>"><%= location %></a>
+                    <% if(iterator.hasNext()) { %>
+                      ,
+                    <% } %>
                 <% } %>
               </td>
             </tr>

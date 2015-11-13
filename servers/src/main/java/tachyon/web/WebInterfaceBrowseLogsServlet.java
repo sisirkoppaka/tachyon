@@ -31,37 +31,36 @@ import javax.servlet.http.HttpServletResponse;
 
 import tachyon.Constants;
 import tachyon.conf.TachyonConf;
-import tachyon.util.CommonUtils;
 
 /**
  * Servlet that provides data for browsing log files.
  */
-public class WebInterfaceBrowseLogsServlet extends HttpServlet {
+public final class WebInterfaceBrowseLogsServlet extends HttpServlet {
   private static final long serialVersionUID = 6589358568781503724L;
 
   private final transient TachyonConf mTachyonConf;
   private final String mBrowseJsp;
   private final String mViewJsp;
-  private final FilenameFilter mLogFileFilter;
+  private static final FilenameFilter LOG_FILE_FILTER = new FilenameFilter() {
+    @Override
+    public boolean accept(File dir, String name) {
+      return name.toLowerCase().endsWith(".log");
+    }
+  };
 
   public WebInterfaceBrowseLogsServlet(boolean isMasterServlet) {
     mTachyonConf = new TachyonConf();
     String prefix = isMasterServlet ? "/" : "/worker/";
     mBrowseJsp = prefix + "browse.jsp";
     mViewJsp = prefix + "viewFile.jsp";
-    mLogFileFilter = new FilenameFilter() {
-      public boolean accept(File dir, String name) {
-        return name.toLowerCase().endsWith(".log");
-      }
-    };
   }
 
   /**
    * This function displays 5KB of a file from a specific offset if it is in ASCII format.
    *
-   * @param file The local file to display
-   * @param request The HttpServletRequest object
-   * @param offset Where the file starts to display.
+   * @param file the local file to display
+   * @param request the HttpServletRequest object
+   * @param offset where the file starts to display
    * @throws IOException
    */
   private void displayLocalFile(File file, HttpServletRequest request, long offset)
@@ -100,8 +99,8 @@ public class WebInterfaceBrowseLogsServlet extends HttpServlet {
    * will be displayed in an error field. Debugging can be enabled to display additional data. Will
    * eventually redirect the request to a jsp.
    *
-   * @param request The HttpServletRequest object
-   * @param response The HttpServletResponse object
+   * @param request the HttpServletRequest object
+   * @param response the HttpServletResponse object
    * @throws ServletException
    * @throws IOException
    */
@@ -115,9 +114,8 @@ public class WebInterfaceBrowseLogsServlet extends HttpServlet {
     request.setAttribute("baseUrl", "./browseLogs");
     request.setAttribute("currentPath", "");
 
-    String tachyonHome = mTachyonConf.get(Constants.TACHYON_HOME, Constants.DEFAULT_HOME);
     String logsPath =
-        mTachyonConf.get(Constants.LOGS_DIR, CommonUtils.concatPath(tachyonHome, "logs"));
+        mTachyonConf.get(Constants.LOGS_DIR);
     File logsDir = new File(logsPath);
     String requestFile = request.getParameter("path");
 
@@ -125,7 +123,7 @@ public class WebInterfaceBrowseLogsServlet extends HttpServlet {
       // List all log files in the log/ directory.
 
       List<UiFileInfo> fileInfos = new ArrayList<UiFileInfo>();
-      File[] logFiles = logsDir.listFiles(mLogFileFilter);
+      File[] logFiles = logsDir.listFiles(LOG_FILE_FILTER);
       for (File logFile : logFiles) {
         String logFileName = logFile.getName();
         fileInfos.add(new UiFileInfo(new UiFileInfo.LocalFileInfo(logFileName, logFileName,
@@ -179,7 +177,7 @@ public class WebInterfaceBrowseLogsServlet extends HttpServlet {
         long offset;
         try {
           if (offsetParam != null) {
-            relativeOffset = Long.valueOf(offsetParam);
+            relativeOffset = Long.parseLong(offsetParam);
           }
         } catch (NumberFormatException nfe) {
           relativeOffset = 0;

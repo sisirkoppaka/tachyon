@@ -17,41 +17,35 @@ package tachyon.worker.block;
 
 import java.io.IOException;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import tachyon.Constants;
+import tachyon.client.WorkerFileSystemMasterClient;
 import tachyon.conf.TachyonConf;
-import tachyon.master.MasterClient;
 import tachyon.util.CommonUtils;
-import tachyon.util.ThreadFactoryUtils;
+import tachyon.worker.WorkerContext;
 
 /**
  * PinListSync periodically syncs the set of pinned inodes from master,
- * and save the new pinned inodes to the BlockDataManager.
+ * and saves the new pinned inodes to the BlockDataManager.
  * The syncing parameters (intervals, timeouts) adopt directly from worker-to-master heartbeat
  * configurations.
  *
  */
-public class PinListSync implements Runnable {
+public final class PinListSync implements Runnable {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
 
   /** Block data manager responsible for interacting with Tachyon and UFS storage */
   private final BlockDataManager mBlockDataManager;
-  /** The executor service for the master client thread */
-  private final ExecutorService mMasterClientExecutorService;
-  /** The configuration values */
-  private final TachyonConf mTachyonConf;
   /** Milliseconds between each sync */
   private final int mSyncIntervalMs;
   /** Milliseconds between syncs before a timeout */
   private final int mSyncTimeoutMs;
 
   /** Client for all master communication */
-  private MasterClient mMasterClient;
+  private WorkerFileSystemMasterClient mMasterClient;
   /** Flag to indicate if the syncing should continue */
   private volatile boolean mRunning;
 
@@ -59,26 +53,18 @@ public class PinListSync implements Runnable {
    * Constructor for PinListSync
    *
    * @param blockDataManager the blockDataManager this syncer is updating to
-   * @param tachyonConf the configuration values to be used
-   * @return PinListSync constructed
+   * @param masterClient the Tachyon master client
    */
-  public PinListSync(BlockDataManager blockDataManager, TachyonConf tachyonConf) {
+  public PinListSync(BlockDataManager blockDataManager, WorkerFileSystemMasterClient masterClient) {
     mBlockDataManager = blockDataManager;
-    mTachyonConf = tachyonConf;
-    mMasterClientExecutorService =
-        Executors.newFixedThreadPool(1,
-            ThreadFactoryUtils.build("worker-client-pinlist-%d", true));
-    mMasterClient =
-        new MasterClient(BlockWorkerUtils.getMasterAddress(mTachyonConf),
-            mMasterClientExecutorService, mTachyonConf);
-    mSyncIntervalMs =
-        mTachyonConf.getInt(Constants.WORKER_TO_MASTER_HEARTBEAT_INTERVAL_MS, Constants.SECOND_MS);
-    mSyncTimeoutMs =
-        mTachyonConf.getInt(Constants.WORKER_HEARTBEAT_TIMEOUT_MS, 10 * Constants.SECOND_MS);
+    TachyonConf conf = WorkerContext.getConf();
+
+    mMasterClient = masterClient;
+    mSyncIntervalMs = conf.getInt(Constants.WORKER_BLOCK_HEARTBEAT_INTERVAL_MS);
+    mSyncTimeoutMs = conf.getInt(Constants.WORKER_BLOCK_HEARTBEAT_TIMEOUT_MS);
 
     mRunning = true;
   }
-
 
   /**
    * Main loop for the sync, continuously sync pinlist from master
@@ -93,18 +79,19 @@ public class PinListSync implements Runnable {
       if (toSleepMs > 0) {
         CommonUtils.sleepMs(LOG, toSleepMs);
       } else {
-        LOG.warn("Sync took: " + lastIntervalMs + ", expected: " + mSyncIntervalMs);
+        LOG.warn("Sync took: {}, expected: {}", lastIntervalMs, mSyncIntervalMs);
       }
 
       // Send the sync
       try {
-        Set<Integer> pinList = mMasterClient.worker_getPinIdList();
+        Set<Long> pinList = mMasterClient.getPinList();
         mBlockDataManager.updatePinList(pinList);
         lastSyncMs = System.currentTimeMillis();
-      } catch (IOException ioe) {
+      } catch (IOException e) {
         // An error occurred, retry after 1 second or error if sync timeout is reached
-        LOG.error("Failed to receive pinlist.", ioe);
-        resetMasterClient();
+        LOG.error("Failed to receive pinlist.", e);
+        // TODO(gene): Add this method to MasterClientBase.
+        // mMasterClient.resetConnection();
         CommonUtils.sleepMs(LOG, Constants.SECOND_MS);
         if (System.currentTimeMillis() - lastSyncMs >= mSyncTimeoutMs) {
           throw new RuntimeException("Master sync timeout exceeded: " + mSyncTimeoutMs);
@@ -118,17 +105,5 @@ public class PinListSync implements Runnable {
    */
   public void stop() {
     mRunning = false;
-    mMasterClient.close();
-    mMasterClientExecutorService.shutdown();
-  }
-
-  /**
-   * Closes and creates a new master client, in case the master changes.
-   */
-  private void resetMasterClient() {
-    mMasterClient.close();
-    mMasterClient =
-        new MasterClient(BlockWorkerUtils.getMasterAddress(mTachyonConf),
-            mMasterClientExecutorService, mTachyonConf);
   }
 }

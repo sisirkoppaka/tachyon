@@ -1,5 +1,4 @@
 <%@ page import="java.util.*" %>
-<%@ page import="tachyon.StorageLevelAlias" %>
 <%@ page import="tachyon.web.*" %>
 <%@ page import="static org.apache.commons.lang.StringEscapeUtils.escapeHtml" %>
 
@@ -80,20 +79,19 @@
 
       <% if (request.getAttribute("fileBlocksOnTier") != null) { %>
         <div>
-          <h5>Blocks on this worker (block capacity is <%= request.getAttribute("blockSizeByte") %> Bytes):</h5>
+          <h5>Blocks on this worker (block capacity is <%= request.getAttribute("blockSizeBytes") %> Bytes):</h5>
           <table class="table table-bordered table-striped">
             <tr>
               <th>ID</th>
               <th>Tier</th>
               <th>Size (Byte)</th>
             </tr>
-            <% for (int i = 0; i < StorageLevelAlias.SIZE; i ++) { %>
-              <% List<UiBlockInfo> blocks = ((List<List<UiBlockInfo>>) request.getAttribute("fileBlocksOnTier")).get(i); %>
-              <% for (UiBlockInfo blockInfo : blocks) { %>
+            <% for (Map.Entry<String, List<UiBlockInfo>> entry : ((Map<String, List<UiBlockInfo>>) request.getAttribute("fileBlocksOnTier")).entrySet()) { %>
+              <% for (UiBlockInfo masterBlockInfo : entry.getValue()) { %>
                 <tr>
-                  <td><%= blockInfo.getID() %></td>
-                  <td><%= StorageLevelAlias.values()[i].name() %></td>
-                  <td><%= blockInfo.getBlockLength() %></td>
+                  <td><%= masterBlockInfo.getID() %></td>
+                  <td><%= entry.getKey() %></td>
+                  <td><%= masterBlockInfo.getBlockLength() %></td>
                 </tr>
               <% } %>
             <% } %>

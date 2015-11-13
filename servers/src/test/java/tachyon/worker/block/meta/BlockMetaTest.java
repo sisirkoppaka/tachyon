@@ -23,64 +23,59 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-import tachyon.Constants;
-import tachyon.TestUtils;
-import tachyon.conf.TachyonConf;
-import tachyon.util.CommonUtils;
+import tachyon.util.io.BufferUtils;
+import tachyon.util.io.PathUtils;
+import tachyon.worker.block.TieredBlockStoreTestUtils;
 
 public class BlockMetaTest {
-  private static final long TEST_USER_ID = 2;
+  private static final long TEST_SESSION_ID = 2;
   private static final long TEST_BLOCK_ID = 9;
   private static final long TEST_BLOCK_SIZE = 100;
+  private static final int TEST_TIER_ORDINAL = 0;
+  private static final String TEST_TIER_ALIAS = "MEM";
+  private static final long[] TEST_TIER_CAPACITY_BYTES = {100};
   private StorageDir mDir;
   private BlockMeta mBlockMeta;
+  private TempBlockMeta mTempBlockMeta;
   private String mTestDirPath;
 
   @Rule
   public TemporaryFolder mFolder = new TemporaryFolder();
 
   @Before
-  public void before() throws IOException {
+  public void before() throws Exception {
     mTestDirPath = mFolder.newFolder().getAbsolutePath();
-    // Set up tier with one storage dir under mTestDirPath with 100 bytes capacity.
-    TachyonConf tachyonConf = new TachyonConf();
-    tachyonConf.set("tachyon.worker.tieredstore.level0.dirs.path", mTestDirPath);
-    tachyonConf.set("tachyon.worker.tieredstore.level0.dirs.quota", "100b");
-    tachyonConf.set(Constants.WORKER_DATA_FOLDER, "");
+    // Sets up tier with one storage dir under mTestDirPath with 100 bytes capacity.
+    TieredBlockStoreTestUtils.setupTachyonConfWithSingleTier(null, TEST_TIER_ORDINAL,
+        TEST_TIER_ALIAS, new String[] {mTestDirPath}, TEST_TIER_CAPACITY_BYTES, "");
 
-    StorageTier tier = StorageTier.newStorageTier(tachyonConf, 0 /* level */);
+    StorageTier tier = StorageTier.newStorageTier(TEST_TIER_ALIAS);
     mDir = tier.getDir(0);
+    mTempBlockMeta = new TempBlockMeta(TEST_SESSION_ID, TEST_BLOCK_ID, TEST_BLOCK_SIZE, mDir);
   }
 
   @Test
   public void getBlockSizeTest() throws IOException {
-    TempBlockMeta tempBlockMeta =
-        new TempBlockMeta(TEST_USER_ID, TEST_BLOCK_ID, TEST_BLOCK_SIZE, mDir);
-
     // With the block file not really existing, expect committed block size to be zero.
-    mBlockMeta = new BlockMeta(tempBlockMeta);
+    mBlockMeta = new BlockMeta(mTempBlockMeta);
     Assert.assertEquals(0, mBlockMeta.getBlockSize());
 
     // With the block file partially written, expect committed block size equals real file size.
-    long expectedBlockSize = TEST_BLOCK_SIZE / 2;
-    byte[] buf = TestUtils.getIncreasingByteArray((int) expectedBlockSize);
-    TestUtils.writeBufferToFile(tempBlockMeta.getCommitPath(), buf);
-    mBlockMeta = new BlockMeta(tempBlockMeta);
-    Assert.assertEquals(expectedBlockSize, mBlockMeta.getBlockSize());
+    byte[] buf = BufferUtils.getIncreasingByteArray((int) TEST_BLOCK_SIZE - 1);
+    BufferUtils.writeBufferToFile(mTempBlockMeta.getCommitPath(), buf);
+    mBlockMeta = new BlockMeta(mTempBlockMeta);
+    Assert.assertEquals(TEST_BLOCK_SIZE - 1, mBlockMeta.getBlockSize());
 
     // With the block file fully written, expect committed block size equals target block size.
-    expectedBlockSize = TEST_BLOCK_SIZE;
-    buf = TestUtils.getIncreasingByteArray((int) expectedBlockSize);
-    TestUtils.writeBufferToFile(tempBlockMeta.getCommitPath(), buf);
-    mBlockMeta = new BlockMeta(tempBlockMeta);
-    Assert.assertEquals(expectedBlockSize, mBlockMeta.getBlockSize());
+    buf = BufferUtils.getIncreasingByteArray((int) TEST_BLOCK_SIZE);
+    BufferUtils.writeBufferToFile(mTempBlockMeta.getCommitPath(), buf);
+    mBlockMeta = new BlockMeta(mTempBlockMeta);
+    Assert.assertEquals(TEST_BLOCK_SIZE, mBlockMeta.getBlockSize());
   }
 
   @Test
   public void getPathTest() {
-    TempBlockMeta tempBlockMeta =
-        new TempBlockMeta(TEST_USER_ID, TEST_BLOCK_ID, TEST_BLOCK_SIZE, mDir);
-    mBlockMeta = new BlockMeta(tempBlockMeta);
-    Assert.assertEquals(CommonUtils.concatPath(mTestDirPath, TEST_BLOCK_ID), mBlockMeta.getPath());
+    mBlockMeta = new BlockMeta(mTempBlockMeta);
+    Assert.assertEquals(PathUtils.concatPath(mTestDirPath, TEST_BLOCK_ID), mBlockMeta.getPath());
   }
 }

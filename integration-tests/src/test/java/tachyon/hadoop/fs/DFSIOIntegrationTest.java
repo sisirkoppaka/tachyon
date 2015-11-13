@@ -175,7 +175,7 @@ public class DFSIOIntegrationTest implements Tool {
   }
 
   public DFSIOIntegrationTest() {
-    this.mConfig = new Configuration();
+    mConfig = new Configuration();
   }
 
   private static String getBaseDir(Configuration conf) {
@@ -210,9 +210,6 @@ public class DFSIOIntegrationTest implements Tool {
 
   @BeforeClass
   public static void beforeClass() throws Exception {
-    // Disable hdfs client caching to avoid file system close() affecting other clients
-    System.setProperty("fs.hdfs.impl.disable.cache", "true");
-
     // Init DFSIOIntegrationTest
     sBench = new DFSIOIntegrationTest();
     sBench.getConf().setBoolean("dfs.support.append", true);
@@ -249,7 +246,6 @@ public class DFSIOIntegrationTest implements Tool {
 
     // Stop local Tachyon cluster
     sLocalTachyonCluster.stop();
-    System.clearProperty("fs.hdfs.impl.disable.cache");
   }
 
   public static void testWrite() throws Exception {
@@ -289,7 +285,7 @@ public class DFSIOIntegrationTest implements Tool {
     sBench.analyzeResult(fs, TestType.TEST_TYPE_READ_BACKWARD, execTime);
   }
 
-  @Test(timeout = 20000)
+  @Test(timeout = 25000)
   public void testReadSkip() throws Exception {
     FileSystem fs = FileSystem.get(sLocalTachyonClusterUri, sBench.getConf());
     long tStart = System.currentTimeMillis();
@@ -309,7 +305,7 @@ public class DFSIOIntegrationTest implements Tool {
     sBench.analyzeResult(fs, TestType.TEST_TYPE_READ_SKIP, execTime);
   }
 
-  // TODO: Should active this unit test after TACHYON-25 has been solved
+  // TODO(hy): Should active this unit test after TACHYON-25 has been solved
   // @Test (timeout = 25000)
   public void testAppend() throws Exception {
     FileSystem fs = FileSystem.get(sLocalTachyonClusterUri, sBench.getConf());
@@ -392,7 +388,7 @@ public class DFSIOIntegrationTest implements Tool {
       }
 
       if (codec != null) {
-        mCompressionCodec = (CompressionCodec) ReflectionUtils.newInstance(codec, getConf());
+        mCompressionCodec = ReflectionUtils.newInstance(codec, getConf());
       }
     }
 
@@ -577,8 +573,8 @@ public class DFSIOIntegrationTest implements Tool {
    * by size.
    *
    * There are three type of reads. 1) Random read always chooses a random position to read from:
-   * skipSize = 0 2) Backward read reads file in reverse order : skipSize < 0 3) Skip-read skips
-   * skipSize bytes after every read : skipSize > 0
+   * skipSize = 0 2) Backward read reads file in reverse order : skipSize &lt; 0 3) Skip-read skips
+   * skipSize bytes after every read : skipSize &gt; 0
    */
   public static class RandomReadMapper extends IOStatMapper {
     private Random mRnd;
@@ -600,7 +596,7 @@ public class DFSIOIntegrationTest implements Tool {
     // IOMapperBase
     public Closeable getIOStream(String name) throws IOException {
       Path filePath = new Path(getDataDir(getConf()), name);
-      this.mFileSize = mFS.getFileStatus(filePath).getLen();
+      mFileSize = mFS.getFileStatus(filePath).getLen();
       InputStream in = mFS.open(filePath);
       if (mCompressionCodec != null) {
         in = new FSDataInputStream(mCompressionCodec.createInputStream(in));
@@ -678,6 +674,7 @@ public class DFSIOIntegrationTest implements Tool {
     for (int i = 0; i < nrFiles; i ++) {
       ioer.doIO(Reporter.NULL, BASE_FILE_NAME + Integer.toString(i), fileSize);
     }
+    ioer.close();
   }
 
   public static void main(String[] args) {
@@ -831,7 +828,7 @@ public class DFSIOIntegrationTest implements Tool {
   @Override
   // Configurable
   public void setConf(Configuration conf) {
-    this.mConfig = conf;
+    mConfig = conf;
   }
 
   /**
@@ -905,12 +902,12 @@ public class DFSIOIntegrationTest implements Tool {
       if (sGenerateReportFile) {
         res = new PrintStream(new FileOutputStream(new File(resFileName), true));
       }
-      for (int i = 0; i < resultLines.length; i ++) {
-        LOG.info(resultLines[i]);
+      for (String resultLine : resultLines) {
+        LOG.info(resultLine);
         if (sGenerateReportFile) {
-          res.println(resultLines[i]);
+          res.println(resultLine);
         } else {
-          System.out.println(resultLines[i]);
+          System.out.println(resultLine);
         }
       }
     } finally {

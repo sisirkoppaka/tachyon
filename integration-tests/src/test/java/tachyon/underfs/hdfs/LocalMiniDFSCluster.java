@@ -24,8 +24,8 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 
-import tachyon.conf.TachyonConf;
 import tachyon.TachyonURI;
+import tachyon.conf.TachyonConf;
 import tachyon.underfs.UnderFileSystem;
 import tachyon.underfs.UnderFileSystemCluster;
 import tachyon.util.UnderFileSystemUtils;
@@ -98,9 +98,9 @@ public class LocalMiniDFSCluster extends UnderFileSystemCluster {
   /**
    * To intiaize the local minidfscluster with single namenode and datanode
    *
-   * @param dfsBaseDirs The base directory for both namenode and datanode. The dfs.name.dir and
+   * @param dfsBaseDirs the base directory for both namenode and datanode. The dfs.name.dir and
    *        dfs.data.dir will be setup as dfsBaseDir/name* and dfsBaseDir/data* respectively
-   * @param tachyonConf The {@link tachyon.conf.TachyonConf} instance.
+   * @param tachyonConf the {@link tachyon.conf.TachyonConf} instance
    */
   public LocalMiniDFSCluster(String dfsBaseDirs, TachyonConf tachyonConf) {
     this(dfsBaseDirs, 1, 0, tachyonConf);
@@ -109,10 +109,10 @@ public class LocalMiniDFSCluster extends UnderFileSystemCluster {
   /**
    * To initialize the local minidfscluster
    *
-   * @param dfsBaseDirs The base directory for both namenode and datanode. The dfs.name.dir and
+   * @param dfsBaseDirs the base directory for both namenode and datanode. The dfs.name.dir and
    *        dfs.data.dir will be setup as dfsBaseDir/name* and dfsBaseDir/data* respectively
-   * @param numDataNode The number of datanode
-   * @param tachyonConf The {@link tachyon.conf.TachyonConf} instance.
+   * @param numDataNode the number of datanode
+   * @param tachyonConf the {@link tachyon.conf.TachyonConf} instance
    */
   public LocalMiniDFSCluster(String dfsBaseDirs, int numDataNode, TachyonConf tachyonConf) {
     this(dfsBaseDirs, numDataNode, 0, tachyonConf);
@@ -121,12 +121,12 @@ public class LocalMiniDFSCluster extends UnderFileSystemCluster {
   /**
    * To initialize the local minidfscluster
    *
-   * @param dfsBaseDirs The base directory for both namenode and datanode. The dfs.name.dir and
+   * @param dfsBaseDirs the base directory for both namenode and datanode. The dfs.name.dir and
    *        dfs.data.dir will be setup as dfsBaseDir/name* and dfsBaseDir/data* respectively
    * @param numDataNode The number of datanode
-   * @param nameNodePort The port of namenode. If it is 0, the real namenode port can be retrieved
+   * @param nameNodePort the port of namenode. If it is 0, the real namenode port can be retrieved
    *        by {@link #getNameNodePort()} after the cluster started
-   * @param tachyonConf The {@link tachyon.conf.TachyonConf} instance.
+   * @param tachyonConf the {@link tachyon.conf.TachyonConf} instance
    */
   public LocalMiniDFSCluster(String dfsBaseDirs, int numDataNode, int nameNodePort,
       TachyonConf tachyonConf) {
@@ -138,14 +138,14 @@ public class LocalMiniDFSCluster extends UnderFileSystemCluster {
   /**
    * To initialize the local minidfscluster
    *
-   * @param conf The base configuration to use in starting the servers. This will be modified as
+   * @param conf the base configuration to use in starting the servers. This will be modified as
    *        necessary.
-   * @param dfsBaseDirs The base directory for both namenode and datanode. The dfs.name.dir and
+   * @param dfsBaseDirs the base directory for both namenode and datanode. The dfs.name.dir and
    *        dfs.data.dir will be setup as dfsBaseDir/name* and dfsBaseDir/data* respectively
-   * @param numDataNode The number of datanode
-   * @param nameNodePort The port of namenode. If it is 0, the real namenode port can be retrieved
+   * @param numDataNode the number of datanode
+   * @param nameNodePort the port of namenode. If it is 0, the real namenode port can be retrieved
    *        by {@link #getNameNodePort()} after the cluster started
-   * @param tachyonConf The {@link tachyon.conf.TachyonConf} instance.
+   * @param tachyonConf the {@link tachyon.conf.TachyonConf} instance
    */
   public LocalMiniDFSCluster(Configuration conf, String dfsBaseDirs, int numDataNode,
       int nameNodePort, TachyonConf tachyonConf) {
@@ -185,7 +185,7 @@ public class LocalMiniDFSCluster extends UnderFileSystemCluster {
    */
   @Override
   public String getUnderFilesystemAddress() {
-    if (null != mDfsClient) {
+    if (mDfsClient != null) {
       return mDfsClient.getUri().toString();
     }
     return null;
@@ -224,9 +224,9 @@ public class LocalMiniDFSCluster extends UnderFileSystemCluster {
         throw new IOException("Failed to make folder: " + mBaseDir);
       }
 
-      // TODO For hadoop 1.x, there exists NPE while startDataNode. It is a known issue caused by
-      // "umask 002"(should be 022) see [HDFS-2556]. So the following codes only work for
-      // hadoop 2.x or "umask 022"
+      // TODO(hy): For hadoop 1.x, there exists NPE while startDataNode. It is a known issue caused
+      // by "umask 002" (should be 022) see [HDFS-2556]. So the following code only works for
+      // hadoop 2.x or "umask 022".
       System.setProperty("test.build.data", mBaseDir);
       mDfsCluster = new MiniDFSCluster(mNamenodePort, mConf, mNumDataNode, true, true, null, null);
       mDfsCluster.waitClusterUp();
@@ -235,6 +235,8 @@ public class LocalMiniDFSCluster extends UnderFileSystemCluster {
         mNamenodePort = mDfsCluster.getNameNodePort();
       }
 
+      // For HDFS of earlier versions, getFileSystem() returns an instance of type
+      // {@link org.apache.hadoop.fs.FileSystem} rather than {@link DistributedFileSystem}
       mDfsClient = (DistributedFileSystem) mDfsCluster.getFileSystem();
       mIsStarted = true;
     }

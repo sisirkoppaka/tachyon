@@ -29,8 +29,9 @@ import io.netty.channel.ChannelFuture;
 
 import tachyon.Constants;
 import tachyon.client.RemoteBlockReader;
-import tachyon.network.protocol.RPCBlockRequest;
-import tachyon.network.protocol.RPCBlockResponse;
+import tachyon.exception.ExceptionMessage;
+import tachyon.network.protocol.RPCBlockReadRequest;
+import tachyon.network.protocol.RPCBlockReadResponse;
 import tachyon.network.protocol.RPCErrorResponse;
 import tachyon.network.protocol.RPCMessage;
 import tachyon.network.protocol.RPCResponse;
@@ -43,37 +44,45 @@ public final class NettyRemoteBlockReader implements RemoteBlockReader {
 
   private final Bootstrap mClientBootstrap;
   private final ClientHandler mHandler;
+  /** A reference to read response so we can explicitly release the resource after reading. */
+  private RPCBlockReadResponse mReadResponse = null;
 
-  // TODO: Creating a new remote block reader may be expensive, so consider a connection pool.
+  /**
+   * Creates a new <code>NettyRemoteBlockReader</code>.
+   *
+   * TODO(gene): Creating a new remote block reader may be expensive, so consider a connection pool.
+   */
   public NettyRemoteBlockReader() {
     mHandler = new ClientHandler();
     mClientBootstrap = NettyClient.createClientBootstrap(mHandler);
   }
 
   @Override
-  public ByteBuffer readRemoteBlock(String host, int port, long blockId, long offset, long length)
-      throws IOException {
-    InetSocketAddress address = new InetSocketAddress(host, port);
+  public ByteBuffer readRemoteBlock(InetSocketAddress address, long blockId, long offset,
+      long length) throws IOException {
 
     try {
       ChannelFuture f = mClientBootstrap.connect(address).sync();
 
-      LOG.info("Connected to remote machine " + address);
+      LOG.info("Connected to remote machine {}", address);
       Channel channel = f.channel();
       SingleResponseListener listener = new SingleResponseListener();
       mHandler.addListener(listener);
-      channel.writeAndFlush(new RPCBlockRequest(blockId, offset, length));
+      channel.writeAndFlush(new RPCBlockReadRequest(blockId, offset, length));
 
       RPCResponse response = listener.get(NettyClient.TIMEOUT_MS, TimeUnit.MILLISECONDS);
       channel.close().sync();
 
       switch (response.getType()) {
-        case RPC_BLOCK_RESPONSE:
-          RPCBlockResponse blockResponse = (RPCBlockResponse) response;
-          LOG.info("Data " + blockId + " from remote machine " + address + " received");
+        case RPC_BLOCK_READ_RESPONSE:
+          RPCBlockReadResponse blockResponse = (RPCBlockReadResponse) response;
+          LOG.info("Data {} from remote machine {} received", blockId, address);
 
           RPCResponse.Status status = blockResponse.getStatus();
           if (status == RPCResponse.Status.SUCCESS) {
+            // always clear the previous response before reading another one
+            close();
+            mReadResponse = blockResponse;
             return blockResponse.getPayloadDataBuffer().getReadOnlyByteBuffer();
           }
           throw new IOException(status.getMessage() + " response: " + blockResponse);
@@ -81,11 +90,24 @@ public final class NettyRemoteBlockReader implements RemoteBlockReader {
           RPCErrorResponse error = (RPCErrorResponse) response;
           throw new IOException(error.getStatus().getMessage());
         default:
-          throw new IOException("Unexpected response message type: " + response.getType()
-              + " (expected: " + RPCMessage.Type.RPC_BLOCK_RESPONSE + ")");
+          throw new IOException(ExceptionMessage.UNEXPECTED_RPC_RESPONSE
+              .getMessage(response.getType(), RPCMessage.Type.RPC_BLOCK_READ_RESPONSE));
       }
     } catch (Exception e) {
       throw new IOException(e);
+    }
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * Release the underlying buffer of previous/current read response.
+   */
+  @Override
+  public void close() throws IOException {
+    if (mReadResponse != null) {
+      mReadResponse.getPayloadDataBuffer().release();
+      mReadResponse = null;
     }
   }
 }

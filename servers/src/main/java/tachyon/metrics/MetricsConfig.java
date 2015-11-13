@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -42,6 +42,11 @@ public final class MetricsConfig {
   private Properties mProperties;
   private Map<String, Properties> mPropertyCategories;
 
+  /**
+   * Creates a new instance of <code>MetricConfig</code> using the given config file.
+   *
+   * @param configFile config file to use
+   */
   public MetricsConfig(String configFile) {
     mConfigFile = configFile;
     mProperties = new Properties();
@@ -50,6 +55,11 @@ public final class MetricsConfig {
     parseConfiguration();
   }
 
+  /**
+   * Creates a new instance of <code>MetricConfig</code> using the given <code>Properties</code>.
+   *
+   * @param properties properties to use
+   */
   public MetricsConfig(Properties properties) {
     mProperties = new Properties();
     setDefaultProperties();
@@ -67,10 +77,10 @@ public final class MetricsConfig {
   }
 
   /**
-   * Get an instance's properties.
+   * Gets properties for the given instance.
    *
-   * @param inst the instance name. Currently there are only two instances: "master" and "worker".
-   * @return the instance's properties if it is present, otherwise a default one is returned.
+   * @param inst the instance name. Currently there are only two instances: "master" and "worker"
+   * @return the instance's properties if it is present, otherwise a default one is returned
    */
   public Properties getInstanceProperties(String inst) {
     Properties prop = mPropertyCategories.get(inst);
@@ -84,9 +94,9 @@ public final class MetricsConfig {
   }
 
   /**
-   * Get the propertyCategories, used by unit tests only.
+   * Gets the propertyCategories, used by unit tests only.
    *
-   * @return a Map that maps from instance name to its properties.
+   * @return a Map that maps from instance name to its properties
    */
   public Map<String, Properties> getPropertyCategories() {
     return mPropertyCategories;
@@ -135,7 +145,7 @@ public final class MetricsConfig {
   }
 
   /**
-   * Set the default properties. The MetricsServlet is enabled and the path is /metrics/json
+   * Sets the default properties. The MetricsServlet is enabled and the path is /metrics/json
    * by default.
    */
   private void setDefaultProperties() {
@@ -147,9 +157,9 @@ public final class MetricsConfig {
    * Uses regex to parse every original property key to a prefix and a suffix. Creates sub
    * properties that are grouped by the prefix.
    *
-   * @param prop the original properties.
-   * @param regex specifies the prefix and suffix pattern.
-   * @return a Map maps from the prefix to its properties.
+   * @param prop the original properties
+   * @param regex specifies the prefix and suffix pattern
+   * @return a Map maps from the prefix to its properties
    */
   public Map<String, Properties> subProperties(Properties prop, String regex) {
     Map<String, Properties> subProperties = new HashMap<String, Properties>();

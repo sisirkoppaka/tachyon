@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -19,10 +19,12 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
+import com.google.common.base.Preconditions;
+
 /**
  * TachyonByteBuffer is a wrapper on Java ByteBuffer plus some information needed by Tachyon.
  */
-public class TachyonByteBuffer implements Closeable {
+public final class TachyonByteBuffer implements Closeable {
   // ByteBuffer contains data.
   public final ByteBuffer mData;
 
@@ -41,16 +43,16 @@ public class TachyonByteBuffer implements Closeable {
    * @param blockLockId the id of the block's lock
    */
   TachyonByteBuffer(TachyonFS tfs, ByteBuffer buf, long blockId, int blockLockId) {
-    mData = buf;
+    mTachyonFS = Preconditions.checkNotNull(tfs);
+    mData = Preconditions.checkNotNull(buf);
     mBlockId = blockId;
     mBlockLockId = blockLockId;
-    mTachyonFS = tfs;
   }
 
   /**
-   * Close the TachyonByteBuffer, here it is synchronized
-   * 
-   * @throws IOException
+   * Closes the TachyonByteBuffer, here it is synchronized.
+   *
+   * @throws IOException when the underlying block cannot be unlocked
    */
   @Override
   public synchronized void close() throws IOException {

@@ -19,12 +19,14 @@ import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Test;
 
+import tachyon.util.OSUtils;
+
 /**
  * Unit tests for tachyon.TachyonURITest
  */
 public class TachyonURITest {
 
-  private static final boolean WINDOWS = System.getProperty("os.name").startsWith("Windows");
+  private static final boolean WINDOWS = OSUtils.isWindows();
 
   @Test
   public void basicTest1() {
@@ -38,10 +40,10 @@ public class TachyonURITest {
     Assert.assertEquals("/xy z/a b c", uri.getPath());
     Assert.assertEquals(19998, uri.getPort());
     Assert.assertEquals("tachyon", uri.getScheme());
-    Assert.assertEquals(true, uri.hasAuthority());
-    Assert.assertEquals(true, uri.hasScheme());
-    Assert.assertEquals(true, uri.isAbsolute());
-    Assert.assertEquals(true, uri.isPathAbsolute());
+    Assert.assertTrue(uri.hasAuthority());
+    Assert.assertTrue(uri.hasScheme());
+    Assert.assertTrue(uri.isAbsolute());
+    Assert.assertTrue(uri.isPathAbsolute());
     Assert.assertEquals("tachyon://localhost:19998/xy z/a b c/d", uri.join("/d").toString());
     Assert.assertEquals("tachyon://localhost:19998/xy z/a b c/d", uri.join(new TachyonURI("/d"))
         .toString());
@@ -60,10 +62,10 @@ public class TachyonURITest {
     Assert.assertEquals("/xy z/a b c", uri.getPath());
     Assert.assertEquals(-1, uri.getPort());
     Assert.assertEquals("hdfs", uri.getScheme());
-    Assert.assertEquals(true, uri.hasAuthority());
-    Assert.assertEquals(true, uri.hasScheme());
-    Assert.assertEquals(true, uri.isAbsolute());
-    Assert.assertEquals(true, uri.isPathAbsolute());
+    Assert.assertTrue(uri.hasAuthority());
+    Assert.assertTrue(uri.hasScheme());
+    Assert.assertTrue(uri.isAbsolute());
+    Assert.assertTrue(uri.isPathAbsolute());
     Assert.assertEquals("hdfs://localhost/xy z/a b c/d", uri.join("/d").toString());
     Assert.assertEquals("hdfs://localhost/xy z/a b c/d", uri.join(new TachyonURI("/d"))
         .toString());
@@ -95,10 +97,10 @@ public class TachyonURITest {
     Assert.assertEquals("", uri.getPath());
     Assert.assertEquals(-1, uri.getPort());
     Assert.assertEquals(null, uri.getScheme());
-    Assert.assertEquals(false, uri.hasAuthority());
-    Assert.assertEquals(false, uri.hasScheme());
-    Assert.assertEquals(false, uri.isAbsolute());
-    Assert.assertEquals(false, uri.isPathAbsolute());
+    Assert.assertFalse(uri.hasAuthority());
+    Assert.assertFalse(uri.hasScheme());
+    Assert.assertFalse(uri.isAbsolute());
+    Assert.assertFalse(uri.isPathAbsolute());
     Assert.assertEquals("/d", uri.join("/d").toString());
     Assert.assertEquals("/d", uri.join(new TachyonURI("/d")).toString());
     Assert.assertEquals("", uri.toString());
@@ -220,6 +222,8 @@ public class TachyonURITest {
 
   @Test
   public void getDepthTests() {
+    Assert.assertEquals(0, new TachyonURI("").getDepth());
+    Assert.assertEquals(0, new TachyonURI(".").getDepth());
     Assert.assertEquals(0, new TachyonURI("/").getDepth());
     Assert.assertEquals(1, new TachyonURI("/a").getDepth());
     Assert.assertEquals(3, new TachyonURI("/a/b/c.txt").getDepth());
@@ -482,5 +486,22 @@ public class TachyonURITest {
       Assert.assertEquals(target,
           new TachyonURI(new TachyonURI(parent), new TachyonURI(child)).toString());
     }
+  }
+
+  @Test
+  public void getLeadingPathTest() {
+    Assert.assertEquals("/",      new TachyonURI("/a/b/c/").getLeadingPath(0));
+    Assert.assertEquals("/a",     new TachyonURI("/a/b/c/").getLeadingPath(1));
+    Assert.assertEquals("/a/b",   new TachyonURI("/a/b/c/").getLeadingPath(2));
+    Assert.assertEquals("/a/b/c", new TachyonURI("/a/b/c/").getLeadingPath(3));
+    Assert.assertEquals(null,     new TachyonURI("/a/b/c/").getLeadingPath(4));
+
+    Assert.assertEquals("/",      new TachyonURI("/").getLeadingPath(0));
+
+    Assert.assertEquals("",       new TachyonURI("").getLeadingPath(0));
+    Assert.assertEquals(null,     new TachyonURI("").getLeadingPath(1));
+    Assert.assertEquals("",       new TachyonURI(".").getLeadingPath(0));
+    Assert.assertEquals(null,     new TachyonURI(".").getLeadingPath(1));
+    Assert.assertEquals("a/b",    new TachyonURI("a/b/c").getLeadingPath(1));
   }
 }

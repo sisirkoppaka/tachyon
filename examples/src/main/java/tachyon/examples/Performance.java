@@ -4,9 +4,9 @@
  * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -15,13 +15,12 @@
 
 package tachyon.examples;
 
-import java.io.InputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.IntBuffer;
 import java.nio.channels.FileChannel.MapMode;
 
 import org.apache.hadoop.conf.Configuration;
@@ -36,14 +35,14 @@ import com.google.common.base.Throwables;
 import tachyon.Constants;
 import tachyon.TachyonURI;
 import tachyon.Version;
-import tachyon.client.OutStream;
-import tachyon.client.ReadType;
-import tachyon.client.TachyonByteBuffer;
-import tachyon.client.TachyonFile;
-import tachyon.client.TachyonFS;
-import tachyon.client.WriteType;
+import tachyon.client.ClientContext;
+import tachyon.client.file.FileOutStream;
+import tachyon.client.file.TachyonFile;
+import tachyon.client.file.TachyonFileSystem;
 import tachyon.conf.TachyonConf;
+import tachyon.exception.TachyonException;
 import tachyon.util.CommonUtils;
+import tachyon.util.FormatUtils;
 
 public class Performance {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
@@ -51,7 +50,7 @@ public class Performance {
   private static final int RESULT_ARRAY_SIZE = 64;
   private static final String FOLDER = "/mnt/ramdisk/";
 
-  private static TachyonFS sMtc = null;
+  private static TachyonFileSystem sTFS = null;
   private static TachyonURI sMasterAddress = null;
   private static String sFileName = null;
   private static int sBlockSizeBytes = -1;
@@ -66,11 +65,13 @@ public class Performance {
   private static int sBaseFileNumber = 0;
   private static boolean sTachyonStreamingRead = false;
 
-  public static void createFiles() throws IOException {
+  public static void createFiles() throws TachyonException, IOException {
     final long startTimeMs = CommonUtils.getCurrentMs();
     for (int k = 0; k < sFiles; k ++) {
-      int fileId = sMtc.createFile(new TachyonURI(sFileName + (k + sBaseFileNumber)));
-      CommonUtils.printTimeTakenMs(startTimeMs, LOG, "user_createFiles with fileId " + fileId);
+      TachyonFile file = sTFS.create(new TachyonURI(sFileName + (k + sBaseFileNumber)));
+      long fileId = file.getFileId();
+      LOG.info(
+          FormatUtils.formatTimeTakenMs(startTimeMs, "user_createFiles with fileId " + fileId));
     }
   }
 
@@ -107,10 +108,10 @@ public class Performance {
       mMsg = msg;
     }
 
-    public void memoryCopyParition() throws IOException {
+    public void memoryCopyPartition() throws IOException {
       if (sDebugMode) {
         mBuf.flip();
-        CommonUtils.printByteBuffer(LOG, mBuf);
+        LOG.info(FormatUtils.byteBufferToString(mBuf));
       }
       mBuf.flip();
       long sum = 0;
@@ -171,7 +172,7 @@ public class Performance {
     @Override
     public void run() {
       try {
-        memoryCopyParition();
+        memoryCopyPartition();
       } catch (IOException e) {
         throw Throwables.propagate(e);
       }
@@ -180,24 +181,24 @@ public class Performance {
   }
 
   public static class TachyonWriterWorker extends Worker {
-    private TachyonFS mTC;
+    private TachyonFileSystem mTFS;
 
     public TachyonWriterWorker(int id, int left, int right, ByteBuffer buf) throws IOException {
       super(id, left, right, buf);
-      mTC = TachyonFS.get(sMasterAddress, new TachyonConf());
+      mTFS = TachyonFileSystem.TachyonFileSystemFactory.get();
     }
 
-    public void writeParition() throws IOException {
+    public void writePartition()
+            throws IOException, TachyonException {
       if (sDebugMode) {
         mBuf.flip();
-        CommonUtils.printByteBuffer(LOG, mBuf);
+        LOG.info(FormatUtils.byteBufferToString(mBuf));
       }
 
       mBuf.flip();
       for (int pId = mLeft; pId < mRight; pId ++) {
         final long startTimeMs = System.currentTimeMillis();
-        TachyonFile file = mTC.getFile(new TachyonURI(sFileName + (pId + sBaseFileNumber)));
-        OutStream os = file.getOutStream(WriteType.MUST_CACHE);
+        FileOutStream os = mTFS.getOutStream(new TachyonURI(sFileName + (pId + sBaseFileNumber)));
         for (int k = 0; k < sBlocksPerFile; k ++) {
           mBuf.putInt(0, k + mWorkerId);
           os.write(mBuf.array());
@@ -210,7 +211,7 @@ public class Performance {
     @Override
     public void run() {
       try {
-        writeParition();
+        writePartition();
       } catch (Exception e) {
         throw Throwables.propagate(e);
       }
@@ -219,26 +220,27 @@ public class Performance {
   }
 
   public static class TachyonReadWorker extends Worker {
-    private TachyonFS mTC;
+    private TachyonFileSystem mTFS;
 
     public TachyonReadWorker(int id, int left, int right, ByteBuffer buf) throws IOException {
       super(id, left, right, buf);
-      mTC = TachyonFS.get(sMasterAddress, new TachyonConf());
+      mTFS = TachyonFileSystem.TachyonFileSystemFactory.get();
     }
 
-    public void readPartition() throws IOException {
-      TachyonByteBuffer buf;
+    public void readPartition()
+            throws IOException, TachyonException {
       if (sDebugMode) {
+        ByteBuffer buf = ByteBuffer.allocate(sBlockSizeBytes);
         LOG.info("Verifying the reading data...");
 
         for (int pId = mLeft; pId < mRight; pId ++) {
-          TachyonFile file = mTC.getFile(new TachyonURI(sFileName + (pId + sBaseFileNumber)));
-          buf = file.readByteBuffer(0);
-          IntBuffer intBuf;
-          intBuf = buf.mData.order(ByteOrder.nativeOrder()).asIntBuffer();
+          TachyonFile file = mTFS.open(new TachyonURI(sFileName + (pId + sBaseFileNumber)));
+          InputStream is = mTFS.getInStream(file);
+          is.read(buf.array());
+          buf.order(ByteOrder.nativeOrder());
           for (int i = 0; i < sBlocksPerFile; i ++) {
             for (int k = 0; k < sBlockSizeBytes / 4; k ++) {
-              int tmp = intBuf.get();
+              int tmp = buf.getInt();
               if ((k == 0 && tmp == (i + mWorkerId)) || (k != 0 && tmp == k)) {
                 LOG.debug("Partition at {} is {}", k, tmp);
               } else {
@@ -246,7 +248,7 @@ public class Performance {
               }
             }
           }
-          buf.close();
+          is.close();
         }
       }
 
@@ -254,8 +256,8 @@ public class Performance {
       if (sTachyonStreamingRead) {
         for (int pId = mLeft; pId < mRight; pId ++) {
           final long startTimeMs = System.currentTimeMillis();
-          TachyonFile file = mTC.getFile(new TachyonURI(sFileName + (pId + sBaseFileNumber)));
-          InputStream is = file.getInStream(ReadType.CACHE);
+          TachyonFile file = mTFS.open(new TachyonURI(sFileName + (pId + sBaseFileNumber)));
+          InputStream is = mTFS.getInStream(file);
           long len = sBlocksPerFile * sBlockSizeBytes;
 
           while (len > 0) {
@@ -269,20 +271,21 @@ public class Performance {
       } else {
         for (int pId = mLeft; pId < mRight; pId ++) {
           final long startTimeMs = System.currentTimeMillis();
-          TachyonFile file = mTC.getFile(new TachyonURI(sFileName + (pId + sBaseFileNumber)));
-          buf = file.readByteBuffer(0);
+          TachyonFile file = mTFS.open(new TachyonURI(sFileName + (pId + sBaseFileNumber)));
+          InputStream is = mTFS.getInStream(file);
           for (int i = 0; i < sBlocksPerFile; i ++) {
-            buf.mData.get(mBuf.array());
+            is.read(mBuf.array());
           }
           sum += mBuf.get(pId % 16);
 
           if (sDebugMode) {
-            buf.mData.order(ByteOrder.nativeOrder()).flip();
-            CommonUtils.printByteBuffer(LOG, buf.mData);
+            mBuf.order(ByteOrder.nativeOrder());
+            mBuf.flip();
+            LOG.info(FormatUtils.byteBufferToString(mBuf));
           }
-          buf.mData.clear();
+          mBuf.clear();
           logPerIteration(startTimeMs, pId, "th ReadTachyonFile @ Worker ", pId);
-          buf.close();
+          is.close();
         }
       }
       sResults[mWorkerId] = sum;
@@ -330,7 +333,7 @@ public class Performance {
     public void io() throws IOException {
       if (sDebugMode) {
         mBuf.flip();
-        CommonUtils.printByteBuffer(LOG, mBuf);
+        LOG.info(FormatUtils.byteBufferToString(mBuf));
       }
       mBuf.flip();
       long sum = 0;
@@ -395,9 +398,8 @@ public class Performance {
     GeneralWorker[] workerThreads = new GeneralWorker[sThreads];
     int t = sFiles / sThreads;
     for (int thread = 0; thread < sThreads; thread ++) {
-      workerThreads[thread] =
-          new GeneralWorker(thread, t * thread, t * (thread + 1), bufs[thread], write, memoryOnly,
-              msg);
+      workerThreads[thread] = new GeneralWorker(thread, t * thread, t * (thread + 1), bufs[thread],
+          write, memoryOnly, msg);
     }
 
     final long startTimeMs = System.currentTimeMillis();
@@ -434,11 +436,11 @@ public class Performance {
     int t = sFiles / sThreads;
     for (int thread = 0; thread < sThreads; thread ++) {
       if (write) {
-        workerThreads[thread] = new TachyonWriterWorker(thread, t * thread, t * (thread + 1),
-            bufs[thread]);
+        workerThreads[thread] =
+            new TachyonWriterWorker(thread, t * thread, t * (thread + 1), bufs[thread]);
       } else {
-        workerThreads[thread] = new TachyonReadWorker(thread, t * thread, t * (thread + 1),
-            bufs[thread]);
+        workerThreads[thread] =
+            new TachyonReadWorker(thread, t * thread, t * (thread + 1), bufs[thread]);
       }
     }
 
@@ -475,8 +477,8 @@ public class Performance {
     int t = sFiles / sThreads;
     String msg = (write ? "Write " : "Read ");
     for (int thread = 0; thread < sThreads; thread ++) {
-      workerThreads[thread] = new HdfsWorker(thread, t * thread, t * (thread + 1), bufs[thread],
-          write, msg);
+      workerThreads[thread] =
+          new HdfsWorker(thread, t * thread, t * (thread + 1), bufs[thread], write, msg);
     }
 
     final long startTimeMs = System.currentTimeMillis();
@@ -496,10 +498,10 @@ public class Performance {
         + " Took " + takenTimeMs + " ms. Current System Time: " + System.currentTimeMillis());
   }
 
-  public static void main(String[] args) throws IOException {
+  public static void main(String[] args) throws Exception {
     if (args.length != 9) {
-      System.out.println("java -cp target/tachyon-" + Version.VERSION
-          + "-jar-with-dependencies.jar tachyon.examples.Performance "
+      System.out.println("java -cp " + Version.TACHYON_JAR
+          + " tachyon.examples.Performance "
           + "<MasterIp> <FileNamePrefix> <WriteBlockSizeInBytes> <BlocksPerFile> "
           + "<DebugMode:true/false> <Threads> <FilesPerThread> <TestCaseNumber> "
           + "<BaseFileNumber>\n" + "1: Files Write Test\n" + "2: Files Read Test\n"
@@ -521,30 +523,32 @@ public class Performance {
     sFileBytes = sBlocksPerFile * sBlockSizeBytes;
     sFilesBytes = 1L * sFileBytes * sFiles;
 
-    TachyonConf tachyonConf = new TachyonConf();
+    TachyonConf tachyonConf = ClientContext.getConf();
 
-    long fileBufferBytes = tachyonConf.getBytes(Constants.USER_FILE_BUFFER_BYTES, 0);
-    sResultPrefix =
-        String.format("Threads %d FilesPerThread %d TotalFiles %d "
+    long fileBufferBytes = tachyonConf.getBytes(Constants.USER_FILE_BUFFER_BYTES);
+    sResultPrefix = String.format(
+        "Threads %d FilesPerThread %d TotalFiles %d "
             + "BLOCK_SIZE_KB %d BLOCKS_PER_FILE %d FILE_SIZE_MB %d "
-            + "Tachyon_WRITE_BUFFER_SIZE_KB %d BaseFileNumber %d : ", sThreads, sFiles / sThreads,
-            sFiles, sBlockSizeBytes / 1024, sBlocksPerFile, sFileBytes / Constants.MB,
-            fileBufferBytes / 1024, sBaseFileNumber);
+            + "Tachyon_WRITE_BUFFER_SIZE_KB %d BaseFileNumber %d : ",
+        sThreads, sFiles / sThreads, sFiles, sBlockSizeBytes / 1024, sBlocksPerFile,
+        sFileBytes / Constants.MB, fileBufferBytes / 1024, sBaseFileNumber);
 
-    for (int k = 0; k < 10000000; k ++) {
-      // Warmup
-    }
+    CommonUtils.warmUpLoop();
+
+    tachyonConf.set(Constants.MASTER_HOSTNAME, sMasterAddress.getHost());
+    tachyonConf.set(Constants.MASTER_PORT, Integer.toString(sMasterAddress.getPort()));
+    ClientContext.reset(tachyonConf);
 
     if (testCase == 1) {
       sResultPrefix = "TachyonFilesWriteTest " + sResultPrefix;
       LOG.info(sResultPrefix);
-      sMtc = TachyonFS.get(sMasterAddress, new TachyonConf());
+      sTFS = TachyonFileSystem.TachyonFileSystemFactory.get();
       createFiles();
       TachyonTest(true);
     } else if (testCase == 2 || testCase == 9) {
       sResultPrefix = "TachyonFilesReadTest " + sResultPrefix;
       LOG.info(sResultPrefix);
-      sMtc = TachyonFS.get(sMasterAddress, new TachyonConf());
+      sTFS = TachyonFileSystem.TachyonFileSystemFactory.get();
       sTachyonStreamingRead = (9 == testCase);
       TachyonTest(false);
     } else if (testCase == 3) {

@@ -15,22 +15,22 @@
 
 package tachyon.worker.block.meta;
 
-import java.io.IOException;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-import tachyon.Constants;
-import tachyon.conf.TachyonConf;
-import tachyon.util.CommonUtils;
+import tachyon.util.io.PathUtils;
+import tachyon.worker.block.TieredBlockStoreTestUtils;
 
 public class TempBlockMetaTest {
-  private static final long TEST_USER_ID = 2;
+  private static final long TEST_SESSION_ID = 2;
   private static final long TEST_BLOCK_ID = 9;
   private static final long TEST_BLOCK_SIZE = 100;
+  private static final int TEST_TIER_ORDINAL = 0;
+  private static final String TEST_TIER_ALIAS = "MEM";
+  private static final long[] TEST_TIER_CAPACITY_BYTES = {100};
   private String mTestDirPath;
   private TempBlockMeta mTempBlockMeta;
 
@@ -38,35 +38,32 @@ public class TempBlockMetaTest {
   public TemporaryFolder mFolder = new TemporaryFolder();
 
   @Before
-  public void before() throws IOException {
+  public void before() throws Exception {
     mTestDirPath = mFolder.newFolder().getAbsolutePath();
+    // Sets up tier with one storage dir under mTestDirPath with 100 bytes capacity.
+    TieredBlockStoreTestUtils.setupTachyonConfWithSingleTier(null, TEST_TIER_ORDINAL,
+        TEST_TIER_ALIAS, new String[] {mTestDirPath}, TEST_TIER_CAPACITY_BYTES, "");
 
-    // Set up tier with one storage dir under mTestDirPath with 100 bytes capacity.
-    TachyonConf tachyonConf = new TachyonConf();
-    tachyonConf.set("tachyon.worker.tieredstore.level0.dirs.path", mTestDirPath);
-    tachyonConf.set("tachyon.worker.tieredstore.level0.dirs.quota", "100b");
-    tachyonConf.set(Constants.WORKER_DATA_FOLDER, "");
-
-    StorageTier tier = StorageTier.newStorageTier(tachyonConf, 0 /* level */);
+    StorageTier tier = StorageTier.newStorageTier(TEST_TIER_ALIAS);
     StorageDir dir = tier.getDir(0);
-    mTempBlockMeta = new TempBlockMeta(TEST_USER_ID, TEST_BLOCK_ID, TEST_BLOCK_SIZE, dir);
+    mTempBlockMeta = new TempBlockMeta(TEST_SESSION_ID, TEST_BLOCK_ID, TEST_BLOCK_SIZE, dir);
   }
 
   @Test
   public void getPathTest() {
-    Assert.assertEquals(CommonUtils.concatPath(mTestDirPath, TEST_USER_ID, TEST_BLOCK_ID),
+    Assert.assertEquals(PathUtils.concatPath(mTestDirPath, TEST_SESSION_ID, TEST_BLOCK_ID),
         mTempBlockMeta.getPath());
   }
 
   @Test
   public void getCommitPathTest() {
-    Assert.assertEquals(CommonUtils.concatPath(mTestDirPath, TEST_BLOCK_ID),
+    Assert.assertEquals(PathUtils.concatPath(mTestDirPath, TEST_BLOCK_ID),
         mTempBlockMeta.getCommitPath());
   }
 
   @Test
-  public void getUserIdTest() {
-    Assert.assertEquals(TEST_USER_ID, mTempBlockMeta.getUserId());
+  public void getSessionIdTest() {
+    Assert.assertEquals(TEST_SESSION_ID, mTempBlockMeta.getSessionId());
   }
 
   @Test

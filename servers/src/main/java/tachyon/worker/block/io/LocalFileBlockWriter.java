@@ -21,14 +21,10 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.WritableByteChannel;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.google.common.base.Preconditions;
 import com.google.common.io.Closer;
 
-import tachyon.Constants;
-import tachyon.util.CommonUtils;
+import tachyon.util.io.BufferUtils;
 import tachyon.worker.block.meta.TempBlockMeta;
 
 /**
@@ -36,15 +32,14 @@ import tachyon.worker.block.meta.TempBlockMeta;
  * <p>
  * This class does not provide thread-safety. Corresponding lock must be acquired.
  */
-public class LocalFileBlockWriter implements BlockWriter {
-  private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
+public final class LocalFileBlockWriter implements BlockWriter {
   private final String mFilePath;
   private final RandomAccessFile mLocalFile;
   private final FileChannel mLocalFileChannel;
   private final Closer mCloser = Closer.create();
 
   /**
-   * Construct a Block writer given the metadata of a temp block
+   * Constructs a Block writer given the metadata of a temp block.
    *
    * @param tempBlockMeta metadata of this temp block
    * @throws IOException if its file can not be open with "rw" mode
@@ -54,7 +49,7 @@ public class LocalFileBlockWriter implements BlockWriter {
   }
 
   /**
-   * Construct a Block writer given the file path of the block
+   * Constructs a Block writer given the file path of the block.
    *
    * @param path file path of the block
    * @throws IOException if its file can not be open with "rw" mode
@@ -88,8 +83,9 @@ public class LocalFileBlockWriter implements BlockWriter {
     ByteBuffer outputBuf =
         mLocalFileChannel.map(FileChannel.MapMode.READ_WRITE, offset, inputBufLength);
     outputBuf.put(inputBuf);
-    CommonUtils.cleanDirectBuffer(outputBuf);
-    return outputBuf.limit();
+    int bytesWritten = outputBuf.limit();
+    BufferUtils.cleanDirectBuffer(outputBuf);
+    return bytesWritten;
   }
 
   @Override

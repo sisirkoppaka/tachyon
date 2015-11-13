@@ -16,40 +16,50 @@
 package tachyon.hadoop;
 
 import java.io.FileNotFoundException;
-import java.io.InputStream;
 import java.io.IOException;
+import java.io.InputStream;
 
-import com.google.common.primitives.Ints;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileSystem.Statistics;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PositionedReadable;
 import org.apache.hadoop.fs.Seekable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.primitives.Ints;
+
 import tachyon.Constants;
-import tachyon.client.InStream;
-import tachyon.client.ReadType;
-import tachyon.client.TachyonFile;
-import tachyon.client.TachyonFS;
+import tachyon.client.ClientContext;
+import tachyon.client.TachyonStorageType;
+import tachyon.client.file.FileInStream;
+import tachyon.client.file.TachyonFile;
+import tachyon.client.file.TachyonFileSystem;
+import tachyon.client.file.options.InStreamOptions;
 import tachyon.conf.TachyonConf;
+import tachyon.exception.ExceptionMessage;
+import tachyon.exception.FileDoesNotExistException;
+import tachyon.exception.TachyonException;
+import tachyon.thrift.FileInfo;
+import tachyon.util.io.BufferUtils;
 
 public class HdfsFileInputStream extends InputStream implements Seekable, PositionedReadable {
   private static final Logger LOG = LoggerFactory.getLogger(Constants.LOGGER_TYPE);
 
   private long mCurrentPosition;
-  private TachyonFS mTFS;
-  private int mFileId;
+  private TachyonFileSystem mTFS;
+  private long mFileId;
   private Path mHdfsPath;
   private Configuration mHadoopConf;
   private int mHadoopBufferSize;
-  private TachyonFile mTachyonFile;
+  private Statistics mStatistics;
+  private FileInfo mFileInfo;
 
   private FSDataInputStream mHdfsInputStream = null;
 
-  private InStream mTachyonFileInputStream = null;
+  private FileInStream mTachyonFileInputStream = null;
 
   private boolean mClosed = false;
 
@@ -59,38 +69,50 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
 
   private final TachyonConf mTachyonConf;
 
-  public HdfsFileInputStream(TachyonFS tfs, int fileId, Path hdfsPath, Configuration conf,
-      int bufferSize, TachyonConf tachyonConf) throws IOException {
-    LOG.debug("PartitionInputStreamHdfs({}, {}, {}, {}, {})", tfs, fileId, hdfsPath, conf,
-        bufferSize);
-    mTachyonConf = tachyonConf;
-    long bufferBytes = mTachyonConf.getBytes(Constants.USER_FILE_BUFFER_BYTES, 0);
+  /**
+   * @param fileId the file id
+   * @param hdfsPath the HDFS path
+   * @param conf Hadoop configuration
+   * @param bufferSize the buffer size
+   * @param stats filesystem statistics
+   * @throws IOException if the underlying file does not exist or its stream cannot be created
+   */
+  public HdfsFileInputStream(long fileId, Path hdfsPath, Configuration conf, int bufferSize,
+      FileSystem.Statistics stats) throws IOException {
+    LOG.debug("HdfsFileInputStream({}, {}, {}, {}, {})", fileId, hdfsPath, conf,
+        bufferSize, stats);
+    mTachyonConf = ClientContext.getConf();
+    long bufferBytes = mTachyonConf.getBytes(Constants.USER_FILE_BUFFER_BYTES);
     mBuffer = new byte[Ints.checkedCast(bufferBytes) * 4];
     mCurrentPosition = 0;
-    mTFS = tfs;
+    mTFS = TachyonFileSystem.TachyonFileSystemFactory.get();
     mFileId = fileId;
     mHdfsPath = hdfsPath;
     mHadoopConf = conf;
     mHadoopBufferSize = bufferSize;
-    mTachyonFile = mTFS.getFile(mFileId);
-    if (mTachyonFile == null) {
-      throw new FileNotFoundException("File " + hdfsPath + " with FID " + fileId
-          + " is not found.");
+    mStatistics = stats;
+    try {
+      mFileInfo = mTFS.getInfo(new TachyonFile(mFileId));
+      mTachyonFileInputStream = mTFS.getInStream(new TachyonFile(mFileId),
+          new InStreamOptions.Builder(ClientContext.getConf())
+              .setTachyonStorageType(TachyonStorageType.STORE).build());
+    } catch (FileDoesNotExistException e) {
+      throw new FileNotFoundException(
+          ExceptionMessage.HDFS_FILE_NOT_FOUND.getMessage(hdfsPath, fileId));
+    } catch (TachyonException e) {
+      throw new IOException(e);
     }
-    mTachyonFile.setUFSConf(mHadoopConf);
-    mTachyonFileInputStream = mTachyonFile.getInStream(ReadType.CACHE);
   }
 
   /**
-   * Method available() is not supported in HdfsFileInputStream and an IOException will be thrown
-   * to override the default behavior of returning 0 in all cases.
+   * This method is not supported in <code>HdfsFileInputStream</code>.
    *
-   * @return
-   * @throws IOException
+   * @return N/A
+   * @throws IOException always
    */
   @Override
   public int available() throws IOException {
-    throw new IOException("Not supported");
+    throw new IOException(ExceptionMessage.NOT_SUPPORTED.getMessage());
   }
 
   @Override
@@ -104,6 +126,13 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
     mClosed = true;
   }
 
+  /**
+   * Sets mHdfsInputStream to a stream from the under storage system with the stream starting at
+   * mCurrentPosition.
+   *
+   * @throws IOException if opening the file fails
+   */
+  // TODO(calvin): Consider removing this when the recovery logic is available in FileInStream
   private void getHdfsInputStream() throws IOException {
     if (mHdfsInputStream == null) {
       FileSystem fs = mHdfsPath.getFileSystem(mHadoopConf);
@@ -112,6 +141,12 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
     }
   }
 
+  /**
+   * Sets mHdfsInputStream to a stream from the under storage system with the stream starting at
+   * position. The mCurrentPosition is not modified to be position.
+   *
+   * @throws IOException if opening the file fails
+   */
   private void getHdfsInputStream(long position) throws IOException {
     if (mHdfsInputStream == null) {
       FileSystem fs = mHdfsPath.getFileSystem(mHadoopConf);
@@ -120,9 +155,6 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
     mHdfsInputStream.seek(position);
   }
 
-  /**
-   * Return the current offset from the start of the file
-   */
   @Override
   public long getPos() throws IOException {
     return mCurrentPosition;
@@ -137,10 +169,14 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
       int ret = 0;
       try {
         ret = mTachyonFileInputStream.read();
+        if (mStatistics != null && ret != -1) {
+          mStatistics.incrementBytesRead(1);
+        }
         mCurrentPosition ++;
         return ret;
       } catch (IOException e) {
         LOG.error(e.getMessage(), e);
+        mTachyonFileInputStream.close();
         mTachyonFileInputStream = null;
       }
     }
@@ -150,7 +186,7 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
 
   @Override
   public int read(byte[] b) throws IOException {
-    throw new IOException("Not supported");
+    throw new IOException(ExceptionMessage.NOT_SUPPORTED.getMessage());
   }
 
   @Override
@@ -162,35 +198,38 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
       int ret = 0;
       try {
         ret = mTachyonFileInputStream.read(b, off, len);
+        if (mStatistics != null && ret != -1) {
+          mStatistics.incrementBytesRead(ret);
+        }
         mCurrentPosition += ret;
         return ret;
       } catch (IOException e) {
         LOG.error(e.getMessage(), e);
+        mTachyonFileInputStream.close();
         mTachyonFileInputStream = null;
       }
     }
 
     getHdfsInputStream();
-    b[off] = (byte) readFromHdfsBuffer();
-    if (b[off] == -1) {
+    int byteRead = readFromHdfsBuffer();
+    // byteRead is an unsigned byte, if its -1 then we have hit EOF
+    if (byteRead == -1) {
       return -1;
     }
+    // Convert byteRead back to a signed byte
+    b[off] = (byte) byteRead;
     return 1;
   }
 
-  /**
-   * Read up to the specified number of bytes, from a given position within a file, and return the
-   * number of bytes read. This does not change the current offset of a file, and is thread-safe.
-   */
   @Override
   public synchronized int read(long position, byte[] buffer, int offset, int length)
       throws IOException {
     if (mClosed) {
-      throw new IOException("Cannot read from a closed stream.");
+      throw new IOException(ExceptionMessage.READ_CLOSED_STREAM.getMessage());
     }
     int ret = -1;
     long oldPos = getPos();
-    if ((position < 0) || (position >= mTachyonFile.length())) {
+    if ((position < 0) || (position >= mFileInfo.getLength())) {
       return ret;
     }
 
@@ -198,6 +237,9 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
       try {
         mTachyonFileInputStream.seek(position);
         ret = mTachyonFileInputStream.read(buffer, offset, length);
+        if (mStatistics != null && ret != -1) {
+          mStatistics.incrementBytesRead(ret);
+        }
         return ret;
       } finally {
         mTachyonFileInputStream.seek(oldPos);
@@ -207,6 +249,9 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
     try {
       getHdfsInputStream(position);
       ret = mHdfsInputStream.read(buffer, offset, length);
+      if (mStatistics != null && ret != -1) {
+        mStatistics.incrementBytesRead(ret);
+      }
       return ret;
     } finally {
       if (mHdfsInputStream != null) {
@@ -215,49 +260,56 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
     }
   }
 
+  /**
+   * Similar to read(), returns a single unsigned byte from the hdfs buffer, or -1 if there is no
+   * more data to be read. This method also fills the hdfs buffer with new data if it is empty.
+   *
+   * @return the next value in the stream from 0 to 255 or -1 if there is no more data to be read
+   * @throws IOException if the bulk read from hdfs fails
+   */
   private int readFromHdfsBuffer() throws IOException {
     if (mBufferPosition < mBufferLimit) {
-      return mBuffer[mBufferPosition ++];
+      if (mStatistics != null) {
+        mStatistics.incrementBytesRead(1);
+      }
+      mCurrentPosition ++;
+      return BufferUtils.byteToInt(mBuffer[mBufferPosition ++]);
     }
     LOG.error("Reading from HDFS directly");
     while ((mBufferLimit = mHdfsInputStream.read(mBuffer)) == 0) {
-      LOG.error("Read 0 bytes in readFromHdfsBuffer for " + mHdfsPath);
+      LOG.error("Read 0 bytes in readFromHdfsBuffer for {}", mHdfsPath);
     }
     if (mBufferLimit == -1) {
       return -1;
     }
     mBufferPosition = 0;
-    return mBuffer[mBufferPosition ++];
+    if (mStatistics != null) {
+      mStatistics.incrementBytesRead(1);
+    }
+    mCurrentPosition ++;
+    return BufferUtils.byteToInt(mBuffer[mBufferPosition ++]);
   }
 
   /**
-   * Read a number of bytes equal to the length of the buffer, from a given position within a file.
-   * This does not change the current offset of a file, and is thread-safe.
-   * <p>
-   * This method is not supported in HdfsFileInputStream and an IOException will be thrown.
-   * </p>
+   * This method is not supported in <code>HdfsFileInputStream</code>.
+   *
+   * @throws IOException always
    */
   @Override
   public void readFully(long position, byte[] buffer) throws IOException {
-    throw new IOException("Not supported");
+    throw new IOException(ExceptionMessage.NOT_SUPPORTED.getMessage());
   }
 
   /**
-   * Read the specified number of bytes, from a given position within a file. This does not change
-   * the current offset of a file, and is thread-safe.
-   * <p>
-   * This method is not supported in HdfsFileInputStream and an IOException will be thrown.
-   * </p>
+   * This method is not supported in <code>HdfsFileInputStream</code>.
+   *
+   * @throws IOException always
    */
   @Override
   public void readFully(long position, byte[] buffer, int offset, int length) throws IOException {
-    throw new IOException("Not supported");
+    throw new IOException(ExceptionMessage.NOT_SUPPORTED.getMessage());
   }
 
-  /**
-   * Seek to the given offset from the start of the file. The next read() will be from that
-   * location. Seek can not pass the end of the file.
-   */
   @Override
   public void seek(long pos) throws IOException {
     if (pos == mCurrentPosition) {
@@ -265,30 +317,32 @@ public class HdfsFileInputStream extends InputStream implements Seekable, Positi
     }
 
     if (pos < 0) {
-      throw new IOException("Seek position is negative: " + pos);
+      throw new IOException(ExceptionMessage.SEEK_NEGATIVE.getMessage(pos));
     }
-    if (pos > mTachyonFile.length()) {
-      throw new IOException("Seek position is past EOF: " + pos + ", fileSize = "
-          + mTachyonFile.length());
+    if (pos > mFileInfo.getLength()) {
+      throw new IOException(ExceptionMessage.SEEK_PAST_EOF.getMessage(pos, mFileInfo.getLength()));
     }
 
     if (mTachyonFileInputStream != null) {
       mTachyonFileInputStream.seek(pos);
     } else {
       getHdfsInputStream(pos);
+      // TODO(calvin): Optimize for the case when the data is still valid in the buffer
+      // Invalidate buffer
+      mBufferLimit = -1;
     }
 
     mCurrentPosition = pos;
   }
 
   /**
-   * Seeks a different copy of the data. Returns true if found a new source, false otherwise.
-   * <p>
-   * This method is not supported in HdfsFileInputStream and an IOException will be thrown.
-   * </p>
+   * This method is not supported in <code>HdfsFileInputStream</code>.
+   *
+   * @return N/A
+   * @throws IOException always
    */
   @Override
   public boolean seekToNewSource(long targetPos) throws IOException {
-    throw new IOException("Not supported");
+    throw new IOException(ExceptionMessage.NOT_SUPPORTED.getMessage());
   }
 }

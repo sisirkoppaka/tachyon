@@ -22,22 +22,25 @@ import tachyon.conf.TachyonConf;
 
 public class HdfsUnderFileSystemUtils {
   /**
-   * Replace default key with user provided key
+   * Replaces default key with user provided key.
+   *
    * @param conf configuration to replace the key in
    * @param tachyonConf Tachyon configuration with the key
    * @param key the key to replace
    */
   public static void addKey(Configuration conf, TachyonConf tachyonConf, String key) {
-    if (System.getProperty(key) != null && conf.get(key) == null) {
+    if (System.getProperty(key) != null) {
       conf.set(key, System.getProperty(key));
-    } else if (tachyonConf.containsKey(key)) {
-      conf.set(key, tachyonConf.get(key, null));
+    } else if (tachyonConf.get(key) != null) {
+      conf.set(key, tachyonConf.get(key));
     }
   }
 
   /**
-   * Add S3 keys to the given Hadoop Configuration object if the user has specified them using
+   * Adds S3 keys to the given Hadoop Configuration object if the user has specified them using
    * System properties, and they're not already set.
+   *
+   * @param conf the Hadoop configuration
    */
   public static void addS3Credentials(Configuration conf) {
     String accessKeyConf = Constants.S3_ACCESS_KEY;

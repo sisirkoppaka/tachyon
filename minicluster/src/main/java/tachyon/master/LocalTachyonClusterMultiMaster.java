@@ -28,10 +28,13 @@ import com.google.common.base.Supplier;
 import com.google.common.base.Throwables;
 
 import tachyon.Constants;
-import tachyon.client.TachyonFS;
+import tachyon.client.ClientContext;
+import tachyon.client.file.TachyonFileSystem;
 import tachyon.conf.TachyonConf;
 import tachyon.underfs.UnderFileSystem;
 import tachyon.util.CommonUtils;
+import tachyon.util.network.NetworkAddressUtils;
+import tachyon.worker.WorkerContext;
 import tachyon.worker.block.BlockWorker;
 
 /**
@@ -43,15 +46,15 @@ public class LocalTachyonClusterMultiMaster {
   public static void main(String[] args) throws Exception {
     LocalTachyonCluster cluster = new LocalTachyonCluster(100, 8 * Constants.MB, Constants.GB);
     cluster.start();
-    CommonUtils.sleepMs(null, Constants.SECOND_MS);
+    CommonUtils.sleepMs(Constants.SECOND_MS);
     cluster.stop();
-    CommonUtils.sleepMs(null, Constants.SECOND_MS);
+    CommonUtils.sleepMs(Constants.SECOND_MS);
 
     cluster = new LocalTachyonCluster(100, 8 * Constants.MB, Constants.GB);
     cluster.start();
-    CommonUtils.sleepMs(null, Constants.SECOND_MS);
+    CommonUtils.sleepMs(Constants.SECOND_MS);
     cluster.stop();
-    CommonUtils.sleepMs(null, Constants.SECOND_MS);
+    CommonUtils.sleepMs(Constants.SECOND_MS);
   }
 
   private TestingServer mCuratorServer = null;
@@ -62,6 +65,7 @@ public class LocalTachyonClusterMultiMaster {
 
   private String mTachyonHome;
   private String mWorkerDataFolder;
+  private String mHostname;
 
   private Thread mWorkerThread = null;
 
@@ -91,19 +95,63 @@ public class LocalTachyonClusterMultiMaster {
     }
   }
 
-  public synchronized TachyonFS getClient() throws IOException {
-    return mClientPool.getClient(mMasterConf);
+  public synchronized TachyonFileSystem getClient() throws IOException {
+    return mClientPool.getClient(ClientContext.getConf());
+  }
+
+  public TachyonConf getMasterTachyonConf() {
+    return mMasterConf;
   }
 
   public String getUri() {
-    return Constants.HEADER_FT + mCuratorServer.getConnectString();
+    return Constants.HEADER_FT + mHostname + ":" + getMasterPort();
+  }
+
+  public int getMasterPort() {
+    return mMasters.get(0).getRPCLocalPort();
+  }
+
+  /**
+   * @return index of leader master in {@link #mMasters}, or -1 if there is no leader temporarily
+   */
+  public int getLeaderIndex() {
+    for (int i = 0; i < mNumOfMasters; i ++) {
+      if (mMasters.get(i).isServing()) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * Iterate over the masters in the order of master creation, kill the first standby master.
+   *
+   * @return true if a standby master is successfully killed, otherwise, false
+   */
+  public boolean killStandby() {
+    for (int k = 0; k < mNumOfMasters; k ++) {
+      if (!mMasters.get(k).isServing()) {
+        try {
+          LOG.info("master {} is a standby. killing it...", k);
+          mMasters.get(k).stop();
+          LOG.info("master {} killed.", k);
+        } catch (Exception e) {
+          LOG.error(e.getMessage(), e);
+          return false;
+        }
+        return true;
+      }
+    }
+    return false;
   }
 
   public boolean killLeader() {
     for (int k = 0; k < mNumOfMasters; k ++) {
-      if (mMasters.get(k).isStarted()) {
+      if (mMasters.get(k).isServing()) {
         try {
+          LOG.info("master {} is the leader. killing it...", k);
           mMasters.get(k).stop();
+          LOG.info("master {} killed.", k);
         } catch (Exception e) {
           LOG.error(e.getMessage(), e);
           return false;
@@ -134,83 +182,115 @@ public class LocalTachyonClusterMultiMaster {
   }
 
   public void start() throws IOException {
-    int maxLevel = 1;
+    int numLevels = 1;
     mTachyonHome =
         File.createTempFile("Tachyon", "U" + System.currentTimeMillis()).getAbsolutePath();
     mWorkerDataFolder = "/datastore";
 
-    String masterDataFolder = mTachyonHome + "/data";
-    String masterLogFolder = mTachyonHome + "/logs";
+    mHostname = NetworkAddressUtils.getLocalHostName(100);
 
-    mMasterConf = new TachyonConf();
+    mMasterConf = MasterContext.getConf();
     mMasterConf.set(Constants.IN_TEST_MODE, "true");
     mMasterConf.set(Constants.TACHYON_HOME, mTachyonHome);
-    mMasterConf.set(Constants.USE_ZOOKEEPER, "true");
+    mMasterConf.set(Constants.ZOOKEEPER_ENABLED, "true");
+    mMasterConf.set(Constants.MASTER_HOSTNAME, mHostname);
+    mMasterConf.set(Constants.MASTER_BIND_HOST, mHostname);
+    mMasterConf.set(Constants.MASTER_PORT, "0");
+    mMasterConf.set(Constants.MASTER_WEB_BIND_HOST, mHostname);
+    mMasterConf.set(Constants.MASTER_WEB_PORT, "0");
     mMasterConf.set(Constants.ZOOKEEPER_ADDRESS, mCuratorServer.getConnectString());
     mMasterConf.set(Constants.ZOOKEEPER_ELECTION_PATH, "/election");
     mMasterConf.set(Constants.ZOOKEEPER_LEADER_PATH, "/leader");
     mMasterConf.set(Constants.USER_QUOTA_UNIT_BYTES, "10000");
-    mMasterConf.set(Constants.USER_DEFAULT_BLOCK_SIZE_BYTE, Integer.toString(mUserBlockSize));
-
+    mMasterConf.set(Constants.USER_BLOCK_SIZE_BYTES_DEFAULT, Integer.toString(mUserBlockSize));
+    mMasterConf.set(Constants.MASTER_TTLCHECKER_INTERVAL_MS, Integer.toString(1000));
     // Since tests are always running on a single host keep the resolution timeout low as otherwise
     // people running with strange network configurations will see very slow tests
-    mMasterConf.set(Constants.HOST_RESOLUTION_TIMEOUT_MS, "250");
+    mMasterConf.set(Constants.NETWORK_HOST_RESOLUTION_TIMEOUT_MS, "250");
+
+    // Disable hdfs client caching to avoid file system close() affecting other clients
+    System.setProperty("fs.hdfs.impl.disable.cache", "true");
 
     // re-build the dir to set permission to 777
     deleteDir(mTachyonHome);
     mkdir(mTachyonHome);
-    mkdir(masterDataFolder);
-    mkdir(masterLogFolder);
-
-    mkdir(mMasterConf.get(Constants.UNDERFS_DATA_FOLDER, "/tachyon/data"));
-    mkdir(mMasterConf.get(Constants.UNDERFS_WORKERS_FOLDER, "/tachyon/workers"));
 
     for (int k = 0; k < mNumOfMasters; k ++) {
-      final LocalTachyonMaster master = LocalTachyonMaster.create(mTachyonHome, mMasterConf);
+      final LocalTachyonMaster master = LocalTachyonMaster.create(mTachyonHome);
       master.start();
+      LOG.info("master NO.{} started, isServing: {}, address: {}", k, master.isServing(),
+          master.getAddress());
       mMasters.add(master);
+      // Each master should generate a new port for binding
+      mMasterConf.set(Constants.MASTER_PORT, "0");
     }
 
-    CommonUtils.sleepMs(null, 10);
+    // Create the UFS directory after LocalTachyonMaster construction, because LocalTachyonMaster
+    // sets UNDERFS_ADDRESS.
+    mkdir(mMasterConf.get(Constants.UNDERFS_ADDRESS));
 
-    mWorkerConf = new TachyonConf(mMasterConf);
+    LOG.info("all {} masters started.", mNumOfMasters);
+    LOG.info("waiting for a leader.");
+    boolean hasLeader = false;
+    while (!hasLeader) {
+      for (int i = 0; i < mMasters.size(); i ++) {
+        if (mMasters.get(i).isServing()) {
+          LOG.info("master NO.{} is selected as leader. address: {}", i,
+              mMasters.get(i).getAddress());
+          hasLeader = true;
+          break;
+        }
+      }
+    }
+    // Use first master port
+    mMasterConf.set(Constants.MASTER_PORT, getMasterPort() + "");
+
+    CommonUtils.sleepMs(10);
+
+    mWorkerConf = WorkerContext.getConf();
+    mWorkerConf.merge(mMasterConf);
     mWorkerConf.set(Constants.WORKER_DATA_FOLDER, mWorkerDataFolder);
     mWorkerConf.set(Constants.WORKER_MEMORY_SIZE, mWorkerCapacityBytes + "");
-    mWorkerConf.set(Constants.WORKER_TO_MASTER_HEARTBEAT_INTERVAL_MS, 15 + "");
+    mWorkerConf.set(Constants.WORKER_BLOCK_HEARTBEAT_INTERVAL_MS, 15 + "");
 
     // Setup conf for worker
-    mWorkerConf.set(Constants.WORKER_MAX_TIERED_STORAGE_LEVEL, Integer.toString(maxLevel));
-    mWorkerConf.set("tachyon.worker.tieredstore.level0.alias", "MEM");
-    mWorkerConf.set("tachyon.worker.tieredstore.level0.dirs.path", mTachyonHome + "/ramdisk");
-    mWorkerConf.set("tachyon.worker.tieredstore.level0.dirs.quota", mWorkerCapacityBytes + "");
+    mWorkerConf.set(Constants.WORKER_TIERED_STORE_LEVELS, Integer.toString(numLevels));
+    mWorkerConf.set(String.format(Constants.WORKER_TIERED_STORE_LEVEL_ALIAS_FORMAT, 0), "MEM");
+    mWorkerConf.set(String.format(Constants.WORKER_TIERED_STORE_LEVEL_DIRS_PATH_FORMAT, 0),
+        mTachyonHome + "/ramdisk");
+    mWorkerConf.set(String.format(Constants.WORKER_TIERED_STORE_LEVEL_DIRS_QUOTA_FORMAT, 0),
+        mWorkerCapacityBytes + "");
 
     // Since tests are always running on a single host keep the resolution timeout low as otherwise
     // people running with strange network configurations will see very slow tests
-    mWorkerConf.set(Constants.HOST_RESOLUTION_TIMEOUT_MS, "250");
+    mWorkerConf.set(Constants.NETWORK_HOST_RESOLUTION_TIMEOUT_MS, "250");
 
-    for (int level = 1; level < maxLevel; level ++) {
-      String tierLevelDirPath = "tachyon.worker.tieredstore.level" + level + ".dirs.path";
-      String[] dirPaths = mWorkerConf.get(tierLevelDirPath, "/mnt/ramdisk").split(",");
+    for (int level = 1; level < numLevels; level ++) {
+      String tierLevelDirPath =
+          String.format(Constants.WORKER_TIERED_STORE_LEVEL_DIRS_PATH_FORMAT, level);
+      String[] dirPaths = mWorkerConf.get(tierLevelDirPath).split(",");
       String newPath = "";
-      for (int i = 0; i < dirPaths.length; i ++) {
-        newPath += mTachyonHome + dirPaths[i] + ",";
+      for (String dirPath : dirPaths) {
+        newPath += mTachyonHome + dirPath + ",";
       }
-      mWorkerConf.set("tachyon.worker.tieredstore.level" + level + ".dirs.path",
+      mWorkerConf.set(String.format(Constants.WORKER_TIERED_STORE_LEVEL_DIRS_PATH_FORMAT, level),
           newPath.substring(0, newPath.length() - 1));
     }
 
-    mWorkerConf.set(Constants.MASTER_ADDRESS, mCuratorServer.getConnectString().split(":")[0]);
-    mWorkerConf.set(Constants.MASTER_PORT, mCuratorServer.getPort() + "");
+    mWorkerConf.set(Constants.WORKER_BIND_HOST, mHostname);
     mWorkerConf.set(Constants.WORKER_PORT, "0");
+    mWorkerConf.set(Constants.WORKER_DATA_BIND_HOST, mHostname);
     mWorkerConf.set(Constants.WORKER_DATA_PORT, "0");
-    mWorkerConf.set(Constants.WORKER_MIN_WORKER_THREADS, "1");
-    mWorkerConf.set(Constants.WORKER_MAX_WORKER_THREADS, "100");
+    mWorkerConf.set(Constants.WORKER_WEB_BIND_HOST, mHostname);
+    mWorkerConf.set(Constants.WORKER_WEB_PORT, "0");
+    mWorkerConf.set(Constants.WORKER_WORKER_BLOCK_THREADS_MIN, "1");
+    mWorkerConf.set(Constants.WORKER_WORKER_BLOCK_THREADS_MAX, "100");
 
     // Perform immediate shutdown of data server. Graceful shutdown is unnecessary and slow
-    mWorkerConf.set(Constants.WORKER_NETTY_SHUTDOWN_QUIET_PERIOD, Integer.toString(0));
-    mWorkerConf.set(Constants.WORKER_NETTY_SHUTDOWN_TIMEOUT, Integer.toString(0));
+    mWorkerConf.set(Constants.WORKER_NETWORK_NETTY_SHUTDOWN_QUIET_PERIOD, Integer.toString(0));
+    mWorkerConf.set(Constants.WORKER_NETWORK_NETTY_SHUTDOWN_TIMEOUT, Integer.toString(0));
 
-    mWorker = new BlockWorker(mWorkerConf);
+    mWorker = new BlockWorker();
     Runnable runWorker = new Runnable() {
       @Override
       public void run() {
@@ -223,11 +303,16 @@ public class LocalTachyonClusterMultiMaster {
     };
     mWorkerThread = new Thread(runWorker);
     mWorkerThread.start();
+    // The client context should reflect the updates to the conf.
+    ClientContext.reset(mWorkerConf);
   }
 
   public void stop() throws Exception {
     stopTFS();
     stopUFS();
+
+    // clear HDFS client caching
+    System.clearProperty("fs.hdfs.impl.disable.cache");
   }
 
   public void stopTFS() throws Exception {
@@ -238,17 +323,6 @@ public class LocalTachyonClusterMultiMaster {
       mMasters.get(k).stop();
     }
     mCuratorServer.stop();
-
-    System.clearProperty("tachyon.home");
-    System.clearProperty("tachyon.usezookeeper");
-    System.clearProperty("tachyon.zookeeper.address");
-    System.clearProperty("tachyon.zookeeper.election.path");
-    System.clearProperty("tachyon.zookeeper.leader.path");
-    System.clearProperty("tachyon.worker.port");
-    System.clearProperty("tachyon.worker.data.port");
-    System.clearProperty("tachyon.worker.data.folder");
-    System.clearProperty("tachyon.worker.memory.size");
-    System.clearProperty("tachyon.worker.to.master.heartbeat.interval.ms");
   }
 
   public void stopUFS() throws Exception {

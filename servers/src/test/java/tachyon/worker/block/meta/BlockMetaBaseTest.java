@@ -15,17 +15,14 @@
 
 package tachyon.worker.block.meta;
 
-import java.io.IOException;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-import tachyon.Constants;
-import tachyon.conf.TachyonConf;
 import tachyon.worker.block.BlockStoreLocation;
+import tachyon.worker.block.TieredBlockStoreTestUtils;
 
 public class BlockMetaBaseTest {
   // This class extending BlockMetaBase is only for test purpose
@@ -49,21 +46,22 @@ public class BlockMetaBaseTest {
   public TemporaryFolder mFolder = new TemporaryFolder();
 
   private static final long TEST_BLOCK_ID = 9;
+  private static final int TEST_TIER_ORDINAL = 0;
+  private static final String TEST_TIER_ALIAS = "MEM";
+  private static final long[] TEST_TIER_CAPACITY_BYTES = {100};
   private String mTestDirPath;
   private StorageTier mTier;
   private StorageDir mDir;
   private BlockMetaBaseForTest mBlockMeta;
 
   @Before
-  public void before() throws IOException {
+  public void before() throws Exception {
     mTestDirPath = mFolder.newFolder().getAbsolutePath();
-    // Set up tier with one storage dir under mTestDirPath with 100 bytes capacity.
-    TachyonConf tachyonConf = new TachyonConf();
-    tachyonConf.set("tachyon.worker.tieredstore.level0.dirs.path", mTestDirPath);
-    tachyonConf.set("tachyon.worker.tieredstore.level0.dirs.quota", "100b");
-    tachyonConf.set(Constants.WORKER_DATA_FOLDER, "");
+    // Sets up tier with one storage dir under mTestDirPath with 100 bytes capacity.
+    TieredBlockStoreTestUtils.setupTachyonConfWithSingleTier(null, TEST_TIER_ORDINAL,
+        TEST_TIER_ALIAS, new String[] {mTestDirPath}, TEST_TIER_CAPACITY_BYTES, "");
 
-    mTier = StorageTier.newStorageTier(tachyonConf, 0 /* level */);
+    mTier = StorageTier.newStorageTier(TEST_TIER_ALIAS);
     mDir = mTier.getDir(0);
     mBlockMeta = new BlockMetaBaseForTest(TEST_BLOCK_ID, mDir);
   }
@@ -76,7 +74,7 @@ public class BlockMetaBaseTest {
   @Test
   public void getBlockLocationTest() {
     BlockStoreLocation expectedLocation =
-        new BlockStoreLocation(mTier.getTierAlias(), mTier.getTierLevel(), mDir.getDirIndex());
+        new BlockStoreLocation(mTier.getTierAlias(), mDir.getDirIndex());
     Assert.assertEquals(expectedLocation, mBlockMeta.getBlockLocation());
   }
 

@@ -15,26 +15,61 @@
 
 package tachyon.web;
 
-import tachyon.master.BlockInfo;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Sets;
+
+import tachyon.thrift.BlockLocation;
+import tachyon.thrift.FileBlockInfo;
+import tachyon.thrift.NetAddress;
 
 public final class UiBlockInfo {
+  private final List<String> mLocations = new ArrayList<String>();
+  private final Set<String> mTierAliases = new HashSet<String>();
   private final long mId;
   private final long mBlockLength;
-  private final boolean mInMemory;
   private final long mLastAccessTimeMs;
 
-  public UiBlockInfo(BlockInfo blockInfo) {
-    mId = blockInfo.mBlockId;
-    mBlockLength = blockInfo.mLength;
-    mInMemory = blockInfo.isInMemory();
+  public UiBlockInfo(FileBlockInfo fileBlockInfo) {
+    Preconditions.checkNotNull(fileBlockInfo);
+    mId = fileBlockInfo.getBlockInfo().getBlockId();
+    mBlockLength = fileBlockInfo.getBlockInfo().getLength();
     mLastAccessTimeMs = -1;
+    addLocations(fileBlockInfo);
+    for (BlockLocation location : fileBlockInfo.getBlockInfo().getLocations()) {
+      mTierAliases.add(location.getTierAlias());
+    }
   }
 
-  public UiBlockInfo(long blockId, long blockLength, long blockLastAccessTimeMs, boolean inMemory) {
+  public UiBlockInfo(long blockId, long blockLength, long blockLastAccessTimeMs, String tierAlias) {
     mId = blockId;
     mBlockLength = blockLength;
-    mInMemory = inMemory;
     mLastAccessTimeMs = blockLastAccessTimeMs;
+    mTierAliases.add(tierAlias);
+  }
+
+  private void addLocations(FileBlockInfo fileBlockInfo) {
+    Set<String> locations = Sets.newHashSet();
+    // add tachyon locations
+    for (BlockLocation location : fileBlockInfo.getBlockInfo().getLocations()) {
+      locations.add(location.getWorkerAddress().getHost());
+    }
+    // add underFS locations
+    for (NetAddress address : fileBlockInfo.getUfsLocations()) {
+      locations.add(address.getHost());
+    }
+    mLocations.addAll(locations);
+  }
+
+  /**
+   * @return true if the block is in the given tier alias in some worker, false otherwise
+   */
+  public boolean isInTier(String tierAlias) {
+    return mTierAliases.contains(tierAlias);
   }
 
   public long getBlockLength() {
@@ -45,11 +80,11 @@ public final class UiBlockInfo {
     return mId;
   }
 
-  public boolean inMemory() {
-    return mInMemory;
-  }
-
   public long getLastAccessTimeMs() {
     return mLastAccessTimeMs;
+  }
+
+  public List<String> getLocations() {
+    return mLocations;
   }
 }
